@@ -170,7 +170,7 @@ const looksLikeAudio = (buf, ext) => {
 const rooms = new Map();
 const safeText = (v, n=60) => String(v ?? '').replace(/[\u0000-\u001F\u007F<>]/g,'').trim().slice(0,n);
 const roomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase();
-const sample = {type:'demo', url:'', title:'VIMO CINÉ • DISCO NIGHT', duration:240};
+const sample = {type:'demo', url:'', title:'HộiRoom • DISCO NIGHT', duration:240};
 const newRoom = (id, name, password='', permanent=false,options={}) => ({
  id, name, password, permanent, category:options.category||'cinema', maxPeople:options.maxPeople||100, isPrivate:!!options.isPrivate, inviteToken:options.isPrivate?crypto.randomBytes(24).toString('hex'):null, karaokeQueue:[], karaokeSinger:null, createdAt:Date.now(), hostId:null, participants:new Map(), messages:[], queue:[], votes:new Set(),
  media:{...sample, playing:false, position:0, updatedAt:Date.now()}, photoActive:null, photoQueue:[], photoPlayback:null, disco:true, bpm:128, stageTheme:'neon', supportCount:0, gifts:[],
@@ -610,4 +610,4 @@ const dist=resolve('dist');
 if(process.env.SERVE_STATIC==='true' && existsSync(join(dist,'index.html'))) {
  app.use(express.static(dist));app.get('/{*splat}',(_req,res)=>res.sendFile(join(dist,'index.html')));
 }
-server.listen(port,()=>console.log(`🎬 VIMO CINÉ API: http://localhost:${port}`));
+server.listen(port,()=>console.log(`🎬 HộiRoom API: http://localhost:${port}`));
