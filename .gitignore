@@ -4,3 +4,7 @@ dist/
 auth-data/
 photo-uploads/
 uploads/
+.env.*
+!.env.example
+coverage/
+*.log
