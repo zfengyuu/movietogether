@@ -18,6 +18,8 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/shared ./shared
 COPY --from=build /app/db ./db
 COPY --from=build /app/scripts/migrate-db.mjs ./scripts/migrate-db.mjs
+# Prepare the directory used as the Render disk mountpoint.
+RUN mkdir -p /app/storage && chown -R node:node /app/storage
 # Use Render preDeployCommand (npm run db:migrate) before the app starts.
 USER node
 EXPOSE 10000
