@@ -13,9 +13,9 @@ function loadYouTubeAPI(){
  apiPromise=new Promise((resolve,reject)=>{
   const original=window.onYouTubeIframeAPIReady;
   window.onYouTubeIframeAPIReady=()=>{original?.();resolve(window.YT);};
-  let script=document.getElementById('wetube-youtube-api');
+  let script=document.getElementById('vimo-youtube-api');
   if(!script){
-   script=document.createElement('script');script.id='wetube-youtube-api';
+   script=document.createElement('script');script.id='vimo-youtube-api';
    script.src='https://www.youtube.com/iframe_api';script.async=true;
    script.onerror=()=>{apiPromise=undefined;reject(new Error('Không tải được YouTube API. Kiểm tra kết nối hoặc bộ chặn quảng cáo.'));};
    document.head.appendChild(script);
@@ -25,19 +25,21 @@ function loadYouTubeAPI(){
 }
 const currentPosition=m=>Math.max(0,(m.position||0)+(m.playing?(Date.now()-m.updatedAt)/1000:0));
 
-export default function YouTubePlayer({media,volume,audioEnabled,focus,onFocusChange,screenRect,onEnableAudio,onEnded,onDuration,onError}){
+export default function YouTubePlayer({media,volume,audioEnabled,focus,onFocusChange,onEnableAudio,onEnded,onDuration,onError}){
  const videoId=useMemo(()=>extractYouTubeId(media.url),[media.url]);
  const mount=useRef(null),wrapper=useRef(null),player=useRef(null),ready=useRef(false),data=useRef({});
  const [blocked,setBlocked]=useState(false),[error,setError]=useState(''),[loaded,setLoaded]=useState(false);
  data.current={media,volume,audioEnabled,onEnded,onDuration,onError};
  const enterFocus=useCallback(()=>{
-  onFocusChange(true);
-  // Fullscreen must run inside the original click event; CSS focus is fallback.
-  wrapper.current?.requestFullscreen?.().catch(()=>{});
+  // Must be requested within the click gesture. The CSS3D Html parent
+  // does not act as a second video layer; fullscreen promotes this same DOM node.
+  const request=wrapper.current?.requestFullscreen?.();
+  if(request){request.then(()=>onFocusChange(true)).catch(()=>data.current.onError?.('Không thể bật toàn màn hình. Hãy thử trên trình duyệt khác.'));}
+  else data.current.onError?.('Trình duyệt không hỗ trợ toàn màn hình.');
  },[onFocusChange]);
  const exitFocus=useCallback(()=>{
-  onFocusChange(false);
   if(document.fullscreenElement===wrapper.current)document.exitFullscreen?.().catch(()=>{});
+  onFocusChange(false);
  },[onFocusChange]);
  useEffect(()=>{
   const onFullscreen=()=>{if(document.fullscreenElement===wrapper.current)onFocusChange(true);else if(!document.fullscreenElement)onFocusChange(false);};
@@ -114,10 +116,9 @@ export default function YouTubePlayer({media,volume,audioEnabled,focus,onFocusCh
   onEnableAudio?.();setBlocked(false);
   try{player.current?.unMute();player.current?.playVideo();}catch{}
  };
- const rect=screenRect||{left:0,top:0,width:0,height:0};
- const tooSmall=rect.width<330||rect.height<185;
+
  return <>
-  <section ref={wrapper} className={'youtube-layer '+(focus?'youtube-focus':'')+(tooSmall?' youtube-too-small':'')} style={!focus?{left:rect.left,top:rect.top,width:rect.width,height:rect.height}:undefined} aria-label="Trình phát YouTube trong rạp">
+  <section ref={wrapper} className={'youtube-layer vimo-three-youtube '+(focus?'youtube-focus':'')} aria-label="Trình phát YouTube trong rạp">
    {focus&&<div className="youtube-focus-head"><div><b>ĐANG XEM • YOUTUBE</b><strong>{media.title}</strong></div><button onClick={exitFocus} title="Thu nhỏ về rạp"><Minimize2 size={18}/> Về rạp</button></div>}
    <div className="youtube-video-surface">
     <div className="yt-native-player"><div key={videoId} ref={mount} className="yt-mount"/></div>
@@ -126,6 +127,5 @@ export default function YouTubePlayer({media,volume,audioEnabled,focus,onFocusCh
    {!focus&&<div className="youtube-outside-actions"><button onClick={enterFocus}><Maximize2 size={14}/> Xem lớn</button>{(blocked||!audioEnabled)&&<button onClick={start}><Volume2 size={14}/> Bật video</button>}</div>}
    {error&&<div className="youtube-error"><Info size={17}/><span>{error}</span><a href={`https://www.youtube.com/watch?v=${videoId}`} target="_blank" rel="noopener noreferrer">Mở YouTube <ExternalLink size={13}/></a></div>}
   </section>
-  {tooSmall&&!focus&&<button className="youtube-open-fallback" onClick={enterFocus}><Maximize2 size={16}/> Xem video YouTube toàn màn hình</button>}
  </>;
 }

@@ -1,6 +1,19 @@
-# Wetube Disco 3D V4 — sân khấu LED, YouTube gọn, tài khoản, chiếu ảnh ưu tiên
+# VIMO CINÉ — Rạp 3D xem chung và nghe nhạc cùng bạn bè
 
-# 🎬 Wetube Disco 3D — bản nâng cấp sân khấu & phát nhạc
+**Cập nhật màn hình YouTube bám đúng mặt phẳng 3D.** Bản này chuyển iframe từ khung 2D phủ màn hình sang `@react-three/drei` `<Html transform center distanceFactor={0.96}>` ở đúng tọa độ màn chiếu, để phối cảnh của iframe thay đổi theo camera. Ảnh ưu tiên cũng hiển thị theo cùng mặt phẳng 3D.
+
+- Trong rạp: YouTube chính thức với `controls=0`; nút điều khiển phát nhạc nằm trong UI rạp, không chặn kéo xoay camera.
+- Nút **Xem lớn** hoặc fullscreen trên thanh trên cùng: dùng Fullscreen API cho **chính iframe đang phát**, không tạo player thứ hai.
+- Nếu trình duyệt từ chối fullscreen, thông báo lỗi thay vì để video nổi cố định sai vị trí.
+- YouTube có thể hiện thương hiệu/quảng cáo và từ chối nhúng một số video. Không dùng canvas capture, proxy hay giải mã YouTube trái điều khoản.
+
+**Kiểm tra:** chọn góc *3D*, kéo xoay camera sang hai bên; iframe phải thu/phóng/nghiêng theo viền màn hình. Nhấn *Xem lớn*, thoát bằng Esc, sau đó tiếp tục xoay camera. Kiểm tra trên desktop và điện thoại.
+
+---
+
+# VIMO CINÉ V4 — sân khấu LED, YouTube gọn, tài khoản, chiếu ảnh ưu tiên
+
+# 🎬 VIMO CINÉ — bản nâng cấp sân khấu & phát nhạc
 
 **Source code demo đầy đủ chức năng cốt lõi** cho website rạp phim / nghe nhạc chung 3D, lấy cảm hứng từ *bố cục tính năng* trong ảnh tham chiếu của người dùng. Đây là code viết mới, **không phải mã nguồn hoặc bản sao tài sản của choigivui.com**.
 
@@ -113,7 +126,7 @@ npm run dev
 ## 7. Cấu trúc dự án
 
 ```
-wetube-disco-3d/
+vimo-cine/
   server/index.js                 # Express, Socket.IO, room state, token LiveKit
   src/App.jsx                    # UI rạp và tương tác, chat, media, voice
   src/components/Theatre.jsx     # Cảnh 3D, ghế, avatar, laser, màn hình

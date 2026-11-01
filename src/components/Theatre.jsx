@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, RoundedBox, Text, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import Hls from 'hls.js';
+import YouTubePlayer from './YouTubePlayer.jsx';
 
 const colors=['#c1a0fb','#f4a4c9','#87c8ff','#eab4f5','#f4cb96','#88d7d8'];
 const seatXY = i => ({x:(i%10-4.5)*1.75, y:0.35+Math.floor(i/10)*.105, z:-2.4+Math.floor(i/10)*1.2});
@@ -187,19 +188,11 @@ function DemoScreen({media, disco}){
  return <group position={[0,4.8,-8.5]}>
   <mesh ref={surface}><planeGeometry args={[12.35,6.9]}/><meshStandardMaterial color="#111c22" emissive="#378888" emissiveIntensity={.2}/></mesh>
   <mesh position={[0,0,.03]}><planeGeometry args={[11.8,6.35]}/><meshBasicMaterial color="#061015"/></mesh>
-  <Html transform center position={[0,0,.07]} distanceFactor={1.28} style={{pointerEvents:'none'}}><div className="demo-screen"><div className="sun"/><div className="wave wave-a"/><div className="wave wave-b"/><div className="demo-label">WETUBE <span>DISCO</span></div><div className="demo-sub">{media.type==='audio'?media.title:'WELCOME TO THE PARTY'}</div><div className="equalizer">{Array.from({length:22},(_,i)=><i key={i} style={{animationDelay:`${i*-.11}s`}}/>)}</div><div className="demo-ticker">✦ LIVE TOGETHER · DANCE TOGETHER · FEEL THE BEAT ✦</div></div></Html>
+  <Html transform center position={[0,0,.07]} distanceFactor={1.28} style={{pointerEvents:'none'}}><div className="demo-screen"><div className="sun"/><div className="wave wave-a"/><div className="wave wave-b"/><div className="demo-label">VIMO <span>CINÉ</span></div><div className="demo-sub">{media.type==='audio'?media.title:'WELCOME TO THE PARTY'}</div><div className="equalizer">{Array.from({length:22},(_,i)=><i key={i} style={{animationDelay:`${i*-.11}s`}}/>)}</div><div className="demo-ticker">✦ LIVE TOGETHER · DANCE TOGETHER · FEEL THE BEAT ✦</div></div></Html>
  </group>;
 }
-function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled,volume,onScreenRect}){
- const {camera,size}=useThree();const participants=room?.participants||[];const orbit=useRef();const lastProjection=useRef('');
- useFrame(()=>{
-  if(!onScreenRect)return;
-  const points=[[-6.15,8.18,-8.38],[6.15,8.18,-8.38],[-6.15,1.43,-8.38],[6.15,1.43,-8.38]].map(p=>new THREE.Vector3(...p).project(camera));
-  if(points.some(p=>p.z>1||p.z<-1))return;
-  const xs=points.map(p=>(p.x+1)*size.width/2),ys=points.map(p=>(1-p.y)*size.height/2);
-  const bounds={left:Math.round(Math.min(...xs)),top:Math.round(Math.min(...ys)),width:Math.round(Math.max(...xs)-Math.min(...xs)),height:Math.round(Math.max(...ys)-Math.min(...ys))};
-  const key=Object.values(bounds).join(',');if(lastProjection.current!==key){lastProjection.current=key;onScreenRect(bounds);}
- });
+function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled,volume,videoFocus,onVideoFocusChange,onEnableAudio,onDuration,onError}){
+ const {camera}=useThree();const participants=room?.participants||[];const orbit=useRef();
  useEffect(()=>{const target=view==='stage'?[0,2.2,3]:[0,3,-3];if(view==='front')camera.position.set(0,8.7,19);else if(view==='top')camera.position.set(0,20,7);else if(view==='stage')camera.position.set(0,3.0,-7.3);else camera.position.set(13,10,19);camera.lookAt(...target);orbit.current?.target.set(...target);orbit.current?.update();},[view,camera]);
  return <>
   <color attach="background" args={['#080719']}/><ambientLight intensity={.72}/><hemisphereLight args={['#b4c9c3','#171c21',1.2]}/>
@@ -216,6 +209,14 @@ function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled
   <Box args={[13.2,7.65,.3]} position={[0,4.8,-8.73]} color="#3d4843" metalness={.75}/>
   <Box args={[12.8,7.2,.18]} position={[0,4.8,-8.54]} color="#080516"/>
   <Stage disco={room.disco} theme={room.stageTheme}/><DemoScreen media={room.media} disco={room.disco}/><ScreenVideo media={room.media} volume={volume} audioEnabled={audioEnabled} onEnded={onMediaEnded}/>
+  {/* HTML is attached to the real cinema plane. Drei transform projects the entire
+      16:9 YouTube iframe in CSS3D, so it follows orbit and perspective exactly. */}
+  {room.media.type==='youtube'&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.37]} zIndexRange={[4,2]} wrapperClass="vimo-3d-video-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
+   <YouTubePlayer key={room.media.url} media={room.media} volume={volume} audioEnabled={audioEnabled} focus={videoFocus} onFocusChange={onVideoFocusChange} onEnableAudio={onEnableAudio} onEnded={onMediaEnded} onDuration={onDuration} onError={onError}/>
+  </Html>}
+  {room.photoActive&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.32]} zIndexRange={[5,3]} wrapperClass="vimo-3d-photo-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
+   <div className="photo-projection vimo-photo-plane"><img src={room.photoActive.url} alt="Ảnh đang được chiếu ưu tiên"/><div className="photo-projection-caption"><strong>{room.photoActive.caption||'Khoảnh khắc đáng nhớ'}</strong><span>Ảnh của {room.photoActive.addedBy} · Đang hiển thị</span></div></div>
+  </Html>}
   {/* Two symmetrical pairs of matching 3-driver LED speakers. */}
   {[-1,1].flatMap((side)=>[0,1].map((row)=><AudioTower key={`${side}-${row}`} x={side*(7.10+row*1.15)} z={-7.55+row*.95} accent={row?'#73ccff':'#cb79ff'}/>))}
   <CeilingLEDs disco={room.disco} theme={room.stageTheme}/>
@@ -231,8 +232,8 @@ function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled
   <OrbitControls ref={orbit} makeDefault target={[0,3,-3]} minDistance={8} maxDistance={37} maxPolarAngle={Math.PI*.48} minPolarAngle={.23} enablePan={false}/>
  </>;
 }
-export default function Theatre({room,you,view='iso',onSeat=()=>{},onPerson=()=>{},onMediaEnded=()=>{},messages=[],volume=1,audioEnabled=false,onScreenRect}) {
+export default function Theatre({room,you,view='iso',onSeat=()=>{},onPerson=()=>{},onMediaEnded=()=>{},messages=[],volume=1,audioEnabled=false,videoFocus=false,onVideoFocusChange=()=>{},onEnableAudio=()=>{},onDuration=()=>{},onError=()=>{}}) {
  return <Canvas dpr={[1,1.7]} shadows={false} gl={{antialias:true,powerPreference:'high-performance'}} camera={{position:[16,11,19],fov:46,near:.1,far:150}}>
-  <Scene room={room} you={you} view={view} onSeat={onSeat} onPerson={onPerson} onMediaEnded={onMediaEnded} messages={messages} volume={volume} audioEnabled={audioEnabled} onScreenRect={onScreenRect}/>
+  <Scene room={room} you={you} view={view} onSeat={onSeat} onPerson={onPerson} onMediaEnded={onMediaEnded} messages={messages} volume={volume} audioEnabled={audioEnabled} videoFocus={videoFocus} onVideoFocusChange={onVideoFocusChange} onEnableAudio={onEnableAudio} onDuration={onDuration} onError={onError}/>
  </Canvas>;
 }

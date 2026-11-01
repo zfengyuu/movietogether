@@ -96,3 +96,21 @@
 .wallet-balance{border-radius:16px;padding:20px;background:linear-gradient(125deg,#4a2664,#2d2256);border:1px solid #c384ff77;display:flex;flex-direction:column;gap:7px;margin-bottom:15px}.wallet-balance small{font-size:10px;letter-spacing:1.5px}.wallet-balance strong{font-size:30px;color:#ffd8f4}.wallet-balance span{font-size:10px;color:#dac1eb}
 .panel textarea{width:100%;padding:12px;background:#171329;color:white;border:1px solid #8f70b4;border-radius:12px;resize:vertical;font:inherit;font-size:12px}.photo-cost{display:flex;justify-content:space-between;align-items:center;background:#ffffff0b;padding:15px;margin:12px 0;border-radius:12px}.photo-cost strong{color:#efa6ff}.photo-file-name{padding:10px;color:#f5cdfb;font-size:12px}.photo-queue-item{display:flex;gap:12px;border-bottom:1px solid #ffffff25;padding:12px 0;align-items:center}.photo-queue-item img{width:72px;height:48px;object-fit:cover;border-radius:8px}.photo-queue-item div{display:flex;flex-direction:column;gap:5px}.photo-queue-item strong{font-size:12px}.photo-queue-item small{font-size:11px}
 @media(max-width:800px){.photo-projection-caption{padding:4px}.photo-projection-caption span{display:none}.auth-dialog{padding:24px}}
+
+/* VIMO CINÉ — a true 3D HTML projection, not a fixed 2D overlay.
+   1280 x 720 at distanceFactor .96 is calibrated to the 12.3 x 6.9 unit cinema screen.
+   Only the large-view / sound buttons can capture clicks in room view. */
+.vimo-3d-video-anchor,.vimo-3d-photo-anchor{pointer-events:none!important}
+.vimo-three-youtube{position:relative!important;inset:auto!important;width:1280px!important;height:720px!important;max-width:none;min-width:1280px;min-height:720px;border:0;box-shadow:none;overflow:visible;background:#03020a;pointer-events:none}
+.vimo-three-youtube .youtube-video-surface{height:720px;width:1280px}
+.vimo-three-youtube .yt-native-player,.vimo-three-youtube .yt-mount,.vimo-three-youtube iframe{pointer-events:none}
+.vimo-three-youtube .youtube-outside-actions{pointer-events:auto;bottom:-50px}
+.vimo-three-youtube .youtube-outside-actions>*{pointer-events:auto}
+/* Fullscreen moves the *same* iframe to the top layer, preserving playback. */
+.vimo-three-youtube:fullscreen{position:fixed!important;inset:0!important;min-width:0;min-height:0;width:100%!important;height:100%!important;max-width:none;pointer-events:auto;display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;padding:clamp(12px,3vh,35px) 2vw;background:#050413;overflow:auto;box-shadow:none}
+.vimo-three-youtube:fullscreen .youtube-video-surface{width:min(95vw,calc((100dvh - 160px)*16/9),1450px);height:auto;aspect-ratio:16/9;max-height:calc(100dvh - 160px)}
+.vimo-three-youtube:fullscreen .yt-native-player,.vimo-three-youtube:fullscreen iframe{pointer-events:auto}
+.vimo-three-youtube:fullscreen .youtube-outside-actions{display:none}
+.vimo-photo-plane{position:relative!important;inset:auto!important;width:1280px;height:720px;box-shadow:none;pointer-events:none}
+.vimo-photo-plane img{width:100%;height:100%;object-fit:contain}
+.brand-main b{color:#e5a2ff}.logo{background:linear-gradient(135deg,#ff70aa,#825aff)}
