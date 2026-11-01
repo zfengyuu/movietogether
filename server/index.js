@@ -5,6 +5,8 @@ import { Server } from 'socket.io';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, renameSync } from 'node:fs';
 import { join, resolve, extname } from 'node:path';
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
+import { openPgAuth } from './auth-store.js';
 import {validateRoomOptions,canJoinRoom,soundcloudTrack,nextSinger} from '../shared/rooms.js';
 import { MAX_STAGE_DANCERS, SKIN_PRICES, votesNeeded, stageSlot, queueOrder } from '../shared/room-rules.js';
 import { normalizeTopupAmount, createPaymentCode, verifySePaySignature } from '../shared/payments.js';
@@ -38,23 +40,30 @@ app.post('/api/webhooks/sepay', express.raw({type:'application/json',limit:'32kb
 app.use(express.json({ limit: '8kb' }));
 app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff'); next();});
 
-// Minimal account system for a SINGLE NODE demo deployment: no third-party auth dependency.
-// Passwords are scrypt-hashed; cookies are HttpOnly/SameSite. Use managed auth + DB in production.
+// Accounts and sessions persist in PostgreSQL whenever DATABASE_URL is set.
+// JSON fallback exists only for local development without a database.
+if(process.env.NODE_ENV==='production'&&!process.env.DATABASE_URL)throw Error('Production requires DATABASE_URL for persistent accounts.');
+const authDb=process.env.DATABASE_URL?await openPgAuth(process.env.DATABASE_URL):null;
 const authDir=resolve('auth-data');mkdirSync(authDir,{recursive:true});
 const accountFile=join(authDir,'accounts.json');
 let accounts=[];
-try { accounts=JSON.parse(readFileSync(accountFile,'utf8')); if(!Array.isArray(accounts))accounts=[]; }catch { accounts=[]; }
-const sessions=new Map(); // ephemeral sessions: logout / server restart expires session
+if(!authDb){try{accounts=JSON.parse(readFileSync(accountFile,'utf8'));if(!Array.isArray(accounts))accounts=[];}catch{accounts=[];}}
+const sessions=new Map(); // Local fallback only; PostgreSQL sessions persist across restarts.
 const failedLogins=new Map();
+const scrypt=promisify(crypto.scrypt);
 function saveAccounts(){
+ if(authDb)return;
  const temp=accountFile+'.tmp';writeFileSync(temp,JSON.stringify(accounts,null,2),{mode:0o600});renameSync(temp,accountFile);
 }
 function parseCookie(req){
- const entry=(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('wetube_sid='));
+ const entry=(req.headers?.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('wetube_sid='));
  return entry?.slice('wetube_sid='.length)||'';
 }
-function getSession(req){
- const token=parseCookie(req);const session=sessions.get(token);
+const tokenDigest=token=>crypto.createHash('sha256').update(token).digest('hex');
+async function getSession(req){
+ const token=parseCookie(req);if(!/^[a-f0-9]{64}$/.test(token))return null;
+ if(authDb)return authDb.getSessionUser(tokenDigest(token));
+ const session=sessions.get(token);
  if(!session||session.expires<Date.now())return null;
  return accounts.find(a=>a.id===session.userId)||null;
 }
@@ -63,52 +72,81 @@ function sessionCookie(req,token,maxAge){
  const secure=process.env.NODE_ENV==='production'?' Secure;':'';
  return `wetube_sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge};${secure}`;
 }
-function createSession(req,res,user){
- const token=crypto.randomBytes(32).toString('hex');
- sessions.set(token,{userId:user.id,expires:Date.now()+7*86400e3});
+async function createSession(req,res,user){
+ const token=crypto.randomBytes(32).toString('hex'),expires=Date.now()+7*86400e3;
+ if(authDb)await authDb.createSession(tokenDigest(token),user.id,expires);
+ else sessions.set(token,{userId:user.id,expires});
  res.setHeader('Set-Cookie',sessionCookie(req,token,7*86400));
  res.json({ok:true,user:publicUser(user)});
 }
 function validateCredentials(body){
- const username=String(body?.username||'').trim();const password=String(body?.password||'');
+ const username=String(body?.username||'').trim(),password=String(body?.password||'');
  if(!/^[a-zA-Z0-9_]{3,24}$/.test(username))return 'Tên tài khoản 3–24 ký tự, chỉ chữ, số và dấu gạch dưới.';
  if(password.length<8||password.length>100)return 'Mật khẩu phải có 8–100 ký tự.';
  return null;
 }
-app.get('/api/auth/me',(req,res)=>res.json({ok:true,user:publicUser(getSession(req))}));
-app.post('/api/auth/register',(req,res)=>{
+app.get('/api/auth/me',async(req,res)=>{
+ try{res.json({ok:true,user:publicUser(await getSession(req))});}
+ catch(error){console.error('Auth lookup failed',error);res.status(503).json({error:'Không thể kiểm tra phiên đăng nhập.'});}
+});
+app.post('/api/auth/register',async(req,res)=>{
  const error=validateCredentials(req.body);if(error)return res.status(400).json({error});
+ if(typeof req.body?.confirmPassword!=='string'||req.body.confirmPassword!==req.body.password)
+  return res.status(400).json({error:'Mật khẩu nhập lại không khớp.'});
  const username=req.body.username.trim();
- if(accounts.some(a=>a.username.toLowerCase()===username.toLowerCase()))return res.status(409).json({error:'Tên tài khoản đã tồn tại.'});
- if(accounts.length>=5000)return res.status(503).json({error:'Đã đạt giới hạn tài khoản demo.'});
- const salt=crypto.randomBytes(16).toString('hex');
- const hash=crypto.scryptSync(req.body.password,salt,64).toString('hex');
- const user={id:crypto.randomUUID(),username,salt,hash,createdAt:Date.now()};
- accounts.push(user);saveAccounts();createSession(req,res,user);
-});
-app.post('/api/auth/login',(req,res)=>{
- const key=req.ip||'unknown';const track=failedLogins.get(key)||{count:0,until:0};
- if(track.until>Date.now())return res.status(429).json({error:'Thử lại sau ít phút.'});
- const username=String(req.body?.username||'').trim();const password=String(req.body?.password||'');
- const user=accounts.find(a=>a.username.toLowerCase()===username.toLowerCase());
- let valid=false;
- if(user&&password.length<=100){
-  const check=Buffer.from(crypto.scryptSync(password,user.salt,64).toString('hex'),'hex');
-  valid=crypto.timingSafeEqual(check,Buffer.from(user.hash,'hex'));
+ try {
+  const salt=crypto.randomBytes(16).toString('hex');
+  const hash=(await scrypt(req.body.password,salt,64)).toString('hex');
+  let user;
+  if(authDb){user=await authDb.registerAccount({id:crypto.randomUUID(),username,salt,hash});}
+  else{
+   if(accounts.some(a=>a.username.toLowerCase()===username.toLowerCase()))return res.status(409).json({error:'Tên tài khoản đã tồn tại.'});
+   if(accounts.length>=5000)return res.status(503).json({error:'Đã đạt giới hạn tài khoản demo.'});
+   user={id:crypto.randomUUID(),username,salt,hash,createdAt:Date.now()};
+   accounts.push(user);saveAccounts();
+  }
+  await createSession(req,res,user);
+ }catch(error){
+  if(error.code==='23505')return res.status(409).json({error:'Tên tài khoản đã tồn tại.'});
+  console.error('Account registration failed',error);
+  res.status(503).json({error:'Không tạo được tài khoản. Vui lòng thử lại.'});
  }
- if(!valid){const count=track.count+1;failedLogins.set(key,{count,until:count>=7?Date.now()+5*60_000:0});return res.status(401).json({error:'Tài khoản hoặc mật khẩu không đúng.'});}
- failedLogins.delete(key);createSession(req,res,user);
 });
-app.post('/api/auth/logout',(req,res)=>{sessions.delete(parseCookie(req));res.setHeader('Set-Cookie',sessionCookie(req,'',0));res.json({ok:true});});
+app.post('/api/auth/login',async(req,res)=>{
+ const key=req.ip||'unknown',track=failedLogins.get(key)||{count:0,until:0};
+ if(track.until>Date.now())return res.status(429).json({error:'Thử lại sau ít phút.'});
+ const username=String(req.body?.username||'').trim(),password=String(req.body?.password||'');
+ if(!/^[a-zA-Z0-9_]{3,24}$/.test(username)||password.length>100||password.length===0)
+  return res.status(401).json({error:'Tài khoản hoặc mật khẩu không đúng.'});
+ try{
+  const user=authDb?await authDb.getAccountByUsername(username):accounts.find(a=>a.username.toLowerCase()===username.toLowerCase());
+  // Use scrypt also for unknown users to avoid timing-based username enumeration.
+  const salt=user?.salt||'00000000000000000000000000000000';
+  const digest=await scrypt(password,salt,64);
+  const stored=user?.hash?Buffer.from(user.hash,'hex'):Buffer.alloc(64);
+  const valid=stored.length===digest.length&&crypto.timingSafeEqual(digest,stored)&&!!user;
+  if(!valid){
+   const count=track.count+1;failedLogins.set(key,{count,until:count>=7?Date.now()+5*60_000:0});
+   return res.status(401).json({error:'Tài khoản hoặc mật khẩu không đúng.'});
+  }
+  failedLogins.delete(key);await createSession(req,res,user);
+ }catch(error){console.error('Account login failed',error);res.status(503).json({error:'Đăng nhập tạm thời không sẵn sàng.'});}
+});
+app.post('/api/auth/logout',async(req,res)=>{
+ const token=parseCookie(req);
+ try{if(authDb&&token)await authDb.deleteSession(tokenDigest(token));else sessions.delete(token);}
+ catch(error){console.error('Account logout failed',error);return res.status(503).json({error:'Không thể đăng xuất lúc này.'});}
+ res.setHeader('Set-Cookie',sessionCookie(req,'',0));res.json({ok:true});
+});
 app.get('/api/wallet/me',async(req,res)=>{
- const user=getSession(req);if(!user)return res.status(401).json({error:'Vui lòng đăng nhập.'});
+ const user=await getSession(req);if(!user)return res.status(401).json({error:'Vui lòng đăng nhập.'});
  try{
   if(walletDb){const w=await walletDb.getWallet(user.id);return res.json({ok:true,user:publicUser(user),balance:w.balance,ledger:w.ledger.slice(0,30),orders:await walletDb.getOrders(user.id),paymentsMode:paymentMode});}
   const online=[...io.sockets.sockets.values()].find(s=>s.data.accountId===user.id);const w=online?walletOf(online):null;return res.json({ok:true,user:publicUser(user),balance:w?.balance||0,ledger:w?.ledger.slice(-30).reverse()||[],orders:[],paymentsMode:'disabled'});
  }catch{return res.status(503).json({error:'Ví tạm thời không sẵn sàng.'});}
 });
 app.post('/api/wallet/topup-orders',async(req,res)=>{
- const user=getSession(req);if(!user)return res.status(401).json({error:'Vui lòng đăng nhập.'});
+ const user=await getSession(req);if(!user)return res.status(401).json({error:'Vui lòng đăng nhập.'});
  if(paymentMode!=='sandbox')return res.status(503).json({error:'Chưa bật môi trường thanh toán sandbox PostgreSQL. Không nạp tiền thật.'});
  if(!sepaySecret||!bankAccount)return res.status(503).json({error:'Thiếu cấu hình SePay sandbox / tài khoản mẫu.'});
  const amount=normalizeTopupAmount(req.body?.amount);if(amount===null)return res.status(400).json({error:'Nạp từ 10.000đ đến 1.000.000đ, bội số 1.000đ.'});
@@ -236,8 +274,8 @@ app.get('/api/wallet/vietqr-config',(_req,res)=>{
  const configured=!!(process.env.VIMO_BANK_ID&&process.env.VIMO_BANK_ACCOUNT&&process.env.VIMO_BANK_NAME);
  res.json({configured,verifiedPaymentsEnabled:false});
 });
-app.post('/api/wallet/vietqr-intent',(req,res)=>{
- const user=getSession(req);
+app.post('/api/wallet/vietqr-intent',async(req,res)=>{
+ const user=await getSession(req);
  if(!user)return res.status(401).json({error:'Đăng nhập để tạo mã nạp ví.'});
  const {VIMO_BANK_ID,VIMO_BANK_ACCOUNT,VIMO_BANK_NAME}=process.env;
  if(!VIMO_BANK_ID||!VIMO_BANK_ACCOUNT||!VIMO_BANK_NAME)return res.status(503).json({error:'Chủ rạp chưa cấu hình VietQR.'});
@@ -252,8 +290,8 @@ app.post('/api/wallet/vietqr-intent',(req,res)=>{
  res.json({id,reference,amount,qrUrl,expiresAt,status:'pending',
   notice:'QR chỉ tạo yêu cầu chuyển khoản. Ví sẽ KHÔNG được cộng tiền cho đến khi ngân hàng/cổng thanh toán xác minh.'});
 });
-app.get('/api/wallet/vietqr-intent/:reference',(req,res)=>{
- const user=getSession(req);if(!user)return res.status(401).json({error:'Bạn cần đăng nhập'});
+app.get('/api/wallet/vietqr-intent/:reference',async(req,res)=>{
+ const user=await getSession(req);if(!user)return res.status(401).json({error:'Bạn cần đăng nhập'});
  const entry=depositRequests.get(String(req.params.reference));
  if(!entry||entry.userId!==user.id)return res.status(404).json({error:'Không tìm thấy yêu cầu nạp'});
  res.json({id:entry.id,reference:req.params.reference,amount:entry.amount,status:entry.status,expiresAt:entry.expiresAt});
@@ -369,10 +407,16 @@ async function resumePendingPhoto(userId){
  else if(!result.insufficient){pendingPhotoRequests.delete(userId);socket.emit('photo_intent_status',{ok:false,message:result.reason||'Ảnh chưa thể hiển thị. Tiền vẫn còn trong ví.'});}
 }
 
+io.use(async(socket,next)=>{
+ try{
+  const user=await getSession({headers:{cookie:socket.handshake.headers.cookie||''}});
+  socket.data.accountId=user?.id||null;
+  socket.data.accountUsername=user?.username||null;
+  next();
+ }catch(error){console.error('Socket authentication failed',error);next(new Error('Không xác thực được phiên đăng nhập.'));}
+});
 io.on('connection', socket => {
  socket.data.roomId=null;
- const loggedIn=getSession({headers:{cookie:socket.handshake.headers.cookie||''}});
- socket.data.accountId=loggedIn?.id||null;
  socket.on('join_room',(raw,ack)=>{
   const id=safeText(raw?.roomId,16).toUpperCase();const r=rooms.get(id);
   if(!r)return err(ack,'Phòng không tồn tại. Hãy tạo phòng mới.');
@@ -381,7 +425,7 @@ io.on('connection', socket => {
   if(inRoom(socket))release(socket);
   const used=new Set(participants(r).filter(p=>p.seat!==null).map(p=>p.seat));
   let seat=r.category==='cinema'?Array.from({length:r.maxPeople},(_,i)=>i).find(i=>!used.has(i)):null;seat??=null;
-  const user=accounts.find(a=>a.id===socket.data.accountId);
+  const user=socket.data.accountUsername?{username:socket.data.accountUsername}:null;
   const p={id:socket.id,name:user?.username||safeText(raw?.name,22)||'Khách xem phim',seat,action:r.category==='dj'?'dance':'sit',dance:'bounce',zone:r.category==='dj'?'floor':'seat',stageSlot:null,skin:'default',accountId:socket.data.accountId||null,color:Math.floor(Math.random()*6),hair:0,accessory:0,pants:0,joinedAt:Date.now()};
   socket.data.uploadToken=crypto.randomBytes(24).toString('hex');
   // Unpredictable bearer token persists between reloads for THIS DEMO ONLY.

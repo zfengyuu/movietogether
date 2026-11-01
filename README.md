@@ -30,3 +30,18 @@ Tài khoản ngân hàng phải là tài khoản chính chủ và đối chiếu
 
 ## Lưu ý triển khai
 Hệ thống vẫn là demo Node một tiến trình: phòng, hàng chờ và ví tạm lưu trong RAM; tài khoản demo ở JSON. Chưa load-test 100 người. YouTube có thể từ chối nhúng hoặc autoplay.
+
+
+## Tài khoản PostgreSQL và đăng ký
+
+Khi có `DATABASE_URL`, đăng ký và đăng nhập sử dụng bảng `auth_accounts`, và phiên đăng nhập HTTP-only dùng bảng `auth_sessions`. Tên người dùng được kiểm tra trùng không phân biệt chữ hoa/chữ thường; mật khẩu được băm `scrypt` với salt riêng, và đăng ký yêu cầu nhập lại mật khẩu trùng khớp ở cả frontend lẫn backend. Khi chạy `NODE_ENV=production`, thiếu `DATABASE_URL` sẽ không khởi động để tránh tạo tài khoản chỉ lưu RAM/JSON.
+
+```bash
+npm install
+npm run db:setup
+npm run db:migrate
+# Nếu đã có tài khoản cũ trong auth-data/accounts.json:
+node scripts/import-legacy-accounts.mjs
+```
+
+Trong dev không có `DATABASE_URL`, app vẫn dùng `auth-data/accounts.json` để thử nhanh (không dùng cho production). Mặc định không chuyển dữ liệu người dùng cũ tự động: hãy chạy import một lần, giữ bản sao lưu `auth-data/accounts.json` và chú ý các username trùng không phân biệt hoa/thường. Việc này là thay đổi code, chưa được chạy end-to-end hay kiểm thử PostgreSQL từ phiên chat này.

@@ -6,6 +6,8 @@ const {Client}=await import('pg');
 const client=new Client({connectionString:url});
 await client.connect();
 try{
- await client.query(readFileSync(new URL('../db/001_wallet.sql',import.meta.url),'utf8'));
- console.log('PostgreSQL wallet migration OK');
+ for(const file of ['001_wallet.sql','002_auth.sql']) {
+  await client.query(readFileSync(new URL('../db/'+file,import.meta.url),'utf8'));
+  console.log('PostgreSQL migration complete: '+file);
+ }
 }finally{await client.end();}

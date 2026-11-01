@@ -23,7 +23,7 @@ const localizeRoom=r=>({...r,media:{...r.media,updatedAt:Date.now()}});
 function App(){
  const [joined,setJoined]=useState(false),[room,setRoom]=useState(null),[you,setYou]=useState('');
  const [name,setName]=useState(localStorage.getItem('disco-name')||''),[code,setCode]=useState(initialCode),[password,setPassword]=useState('');
- const [account,setAccount]=useState(null),[authMode,setAuthMode]=useState('login'),[authOpen,setAuthOpen]=useState(false),[authName,setAuthName]=useState(''),[authPassword,setAuthPassword]=useState(''),[authBusy,setAuthBusy]=useState(false);
+ const [account,setAccount]=useState(null),[authMode,setAuthMode]=useState('login'),[authOpen,setAuthOpen]=useState(false),[authName,setAuthName]=useState(''),[authPassword,setAuthPassword]=useState(''),[authConfirmPassword,setAuthConfirmPassword]=useState(''),[authBusy,setAuthBusy]=useState(false);
  const [wallet,setWallet]=useState({balance:0,demoCredited:false,demoEnabled:false,ledger:[]}),[photoFile,setPhotoFile]=useState(null),[photoCaption,setPhotoCaption]=useState(''),[photoDuration,setPhotoDuration]=useState(10),[photoBusy,setPhotoBusy]=useState(false),[topupOpen,setTopupOpen]=useState(false),[pendingPhoto,setPendingPhoto]=useState(null),[topupAmount,setTopupAmount]=useState(20000),[topupOrder,setTopupOrder]=useState(null);
  const [newName,setNewName]=useState('Phòng party của tôi'),[newPassword,setNewPassword]=useState(''),[inviteToken,setInviteToken]=useState(initialInvite);
  const [create,setCreate]=useState(false),[rooms,setRooms]=useState([]),[panel,setPanel]=useState(''),[notice,setNotice]=useState('');
@@ -107,11 +107,13 @@ function App(){
   setAudioEnabled(true);if(screenMedia.type==='audio'&&screenMedia.playing){audioRef.current?.play().catch(()=>{});}await demoBeat.enable().catch(()=>{});
  };
  const authSubmit=async e=>{
-  e.preventDefault();setAuthBusy(true);
+  e.preventDefault();
+  if(authMode==='register'&&authPassword!==authConfirmPassword)return toast('Mật khẩu nhập lại không khớp.');
+  setAuthBusy(true);
   try{
-   const r=await fetch(`/api/auth/${authMode}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:authName,password:authPassword})});
+   const r=await fetch(`/api/auth/${authMode}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:authName,password:authPassword,...(authMode==='register'?{confirmPassword:authConfirmPassword}:{})})});
    const data=await r.json();if(!r.ok)throw Error(data.error||'Không đăng nhập được');
-   setAccount(data.user);setName(data.user.username);localStorage.setItem('disco-name',data.user.username);setAuthOpen(false);setAuthPassword('');
+   setAccount(data.user);setName(data.user.username);localStorage.setItem('disco-name',data.user.username);setAuthOpen(false);setAuthPassword('');setAuthConfirmPassword('');
    if(joined){socket.emit('leave_room');joinRef.current={...joinRef.current,name:data.user.username};}
    socket.disconnect();socket.connect();toast('Đã đăng nhập '+data.user.username);
   }catch(error){toast(error.message);}finally{setAuthBusy(false);}
@@ -272,10 +274,10 @@ function App(){
   {authOpen&&<div className="auth-backdrop" onClick={()=>setAuthOpen(false)}><div className="auth-dialog" role="dialog" aria-modal="true" aria-label="Tài khoản HỘIROOM" onClick={e=>e.stopPropagation()}>
     <button className="auth-close" onClick={()=>setAuthOpen(false)}><X size={20}/></button>
     <div className="auth-logo">V</div><h2>{account?'Tài khoản của bạn':authMode==='login'?'Chào mừng trở lại':'Tạo tài khoản mới'}</h2>
-    <p>{account?'Bạn đã đăng nhập và có thể tiếp tục xem cùng bạn bè.':'Tài khoản demo được lưu ở server; mật khẩu được băm bằng scrypt.'}</p>
+    <p>{account?'Bạn đã đăng nhập và có thể tiếp tục xem cùng bạn bè.':'Tài khoản được lưu bằng PostgreSQL khi đã cấu hình DATABASE_URL; mật khẩu được băm bằng scrypt.'}</p>
     {account?<><div className="account-tag"><Users size={17}/>{account.username}</div><button className="auth-primary" onClick={authLogout}>Đăng xuất</button></>:<>
-    <div className="auth-tabs"><button className={authMode==='login'?'selected':''} onClick={()=>setAuthMode('login')}>Đăng nhập</button><button className={authMode==='register'?'selected':''} onClick={()=>setAuthMode('register')}>Đăng ký</button></div>
-    <form onSubmit={authSubmit}><label>Tên tài khoản</label><input autoFocus required minLength={3} maxLength={24} pattern="[a-zA-Z0-9_]+" autoComplete="username" value={authName} onChange={e=>setAuthName(e.target.value)} placeholder="ten_cua_ban"/><label>Mật khẩu</label><input required type="password" minLength={8} autoComplete={authMode==='login'?'current-password':'new-password'} value={authPassword} onChange={e=>setAuthPassword(e.target.value)} placeholder="Ít nhất 8 ký tự"/><button className="auth-primary" disabled={authBusy} type="submit">{authBusy?'Đang xử lý...':authMode==='login'?'Đăng nhập':'Đăng ký và đăng nhập'}</button></form>
+    <div className="auth-tabs"><button className={authMode==='login'?'selected':''} onClick={()=>{setAuthMode('login');setAuthConfirmPassword('')}}>Đăng nhập</button><button className={authMode==='register'?'selected':''} onClick={()=>{setAuthMode('register');setAuthConfirmPassword('')}}>Đăng ký</button></div>
+    <form onSubmit={authSubmit}><label>Tên tài khoản</label><input autoFocus required minLength={3} maxLength={24} pattern="[a-zA-Z0-9_]+" autoComplete="username" value={authName} onChange={e=>setAuthName(e.target.value)} placeholder="ten_cua_ban"/><label>Mật khẩu</label><input required type="password" minLength={8} autoComplete={authMode==='login'?'current-password':'new-password'} value={authPassword} onChange={e=>setAuthPassword(e.target.value)} placeholder="Ít nhất 8 ký tự"/>{authMode==='register'&&<><label htmlFor="auth-confirm-password">Nhập lại mật khẩu</label><input id="auth-confirm-password" required type="password" minLength={8} maxLength={100} autoComplete="new-password" value={authConfirmPassword} onChange={e=>setAuthConfirmPassword(e.target.value)} placeholder="Nhập lại mật khẩu để xác nhận" /></>}<button className="auth-primary" disabled={authBusy} type="submit">{authBusy?'Đang xử lý...':authMode==='login'?'Đăng nhập':'Đăng ký và đăng nhập'}</button></form>
     </>}
    </div></div>}
   {notice&&<div className="toast"><Info size={16}/>{notice}</div>}
