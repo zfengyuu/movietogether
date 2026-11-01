@@ -300,7 +300,15 @@ app.get('/api/wallet/vietqr-intent/:reference',async(req,res)=>{
  res.json({id:entry.id,reference:req.params.reference,amount:entry.amount,status:entry.status,expiresAt:entry.expiresAt});
 });
 
-app.get('/api/health',(_req,res)=>res.json({ok:true,rooms:rooms.size,online:[...rooms.values()].reduce((s,r)=>s+r.participants.size,0)}));
+app.get('/api/health',async(_req,res)=>{
+ try {
+  if(walletDb)await walletDb.ping();
+  res.json({ok:true,database:walletDb?'connected':'demo',rooms:rooms.size,online:[...rooms.values()].reduce((s,r)=>s+r.participants.size,0)});
+ }catch(error){
+  console.error('Healthcheck: PostgreSQL unavailable',error.message);
+  res.status(503).json({ok:false,database:'unavailable'});
+ }
+});
 app.get('/api/rooms',(_req,res)=>res.json([...rooms.values()].filter(r=>!r.password&&!r.isPrivate).map(r=>({id:r.id,name:r.name,category:r.category,online:r.participants.size,maxPeople:r.maxPeople}))));
 const roomCreateTimes=new Map();
 app.post('/api/rooms',(req,res)=>{
