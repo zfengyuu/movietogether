@@ -156,7 +156,12 @@ app.post('/api/wallet/topup-orders',async(req,res)=>{
  const amount=normalizeTopupAmount(req.body?.amount);if(amount===null)return res.status(400).json({error:'Nạp từ 10.000đ đến 1.000.000đ, bội số 1.000đ.'});
  try{
   const order=await walletDb.createTopupOrder(user.id,amount,createPaymentCode());
-  return res.status(201).json({ok:true,order,qrUrl:null,message:'Chỉ sandbox. KHÔNG chuyển khoản thật. Kiểm tra webhook có chữ ký HMAC hợp lệ.'});
+  // SQL order code is the only reference accepted by the signed SePay webhook.
+   const qrReady=!!(process.env.VIMO_BANK_ID&&process.env.VIMO_BANK_ACCOUNT&&process.env.VIMO_BANK_NAME)&&String(process.env.VIMO_BANK_ACCOUNT)===String(bankAccount);
+   const qrUrl=qrReady?'https://img.vietqr.io/image/'+encodeURIComponent(process.env.VIMO_BANK_ID)+'-'+encodeURIComponent(bankAccount)+'-compact2.png?'+
+     new URLSearchParams({amount:String(amount),addInfo:order.code,accountName:process.env.VIMO_BANK_NAME}):null;
+   return res.status(201).json({ok:true,order,reference:order.code,amount,qrUrl,
+     message:'CHỈ SANDBOX. Không chuyển tiền thật! Chỉ cộng ví sau webhook HMAC hợp lệ.'});
  }catch(error){console.error('Topup order failed',error);return res.status(503).json({error:'Không tạo được đơn nạp.'});}
 });
 
@@ -275,32 +280,18 @@ const advancePhoto = r => {
 
 // VietQR generates transfer instructions, not proof of payment. Only authenticated
 // users can request a unique reference. No client action may credit a wallet.
+// Legacy in-memory QR intents cannot be matched to a PostgreSQL wallet order.
 app.get('/api/wallet/vietqr-config',(_req,res)=>{
- const configured=!!(process.env.VIMO_BANK_ID&&process.env.VIMO_BANK_ACCOUNT&&process.env.VIMO_BANK_NAME);
- res.json({configured,verifiedPaymentsEnabled:false});
+ const bankReady=!!(process.env.VIMO_BANK_ID&&process.env.VIMO_BANK_ACCOUNT&&process.env.VIMO_BANK_NAME);
+ const configured=paymentMode==='sandbox' && bankReady && String(process.env.VIMO_BANK_ACCOUNT)===String(bankAccount) && !!sepaySecret;
+ res.json({configured,verifiedPaymentsEnabled:false,paymentsMode:paymentMode});
 });
-app.post('/api/wallet/vietqr-intent',async(req,res)=>{
- const user=await getSession(req);
- if(!user)return res.status(401).json({error:'Đăng nhập để tạo mã nạp ví.'});
- const {VIMO_BANK_ID,VIMO_BANK_ACCOUNT,VIMO_BANK_NAME}=process.env;
- if(!VIMO_BANK_ID||!VIMO_BANK_ACCOUNT||!VIMO_BANK_NAME)return res.status(503).json({error:'Chủ rạp chưa cấu hình VietQR.'});
- const amount=Number(req.body?.amount);
- if(!Number.isInteger(amount)||amount<10000||amount>1000000||amount%10000!==0)
-  return res.status(400).json({error:'Chọn số tiền từ 10.000đ đến 1.000.000đ theo bước 10.000đ.'});
- const reference='VIMO'+crypto.randomBytes(5).toString('hex').toUpperCase();
- const id=crypto.randomUUID();const expiresAt=Date.now()+30*60*1000;
- depositRequests.set(reference,{id,userId:user.id,amount,expiresAt,status:'pending'});
- const qrUrl='https://img.vietqr.io/image/'+encodeURIComponent(VIMO_BANK_ID)+'-'+encodeURIComponent(VIMO_BANK_ACCOUNT)+'-compact2.png?'+
-  new URLSearchParams({amount:String(amount),addInfo:reference,accountName:VIMO_BANK_NAME});
- res.json({id,reference,amount,qrUrl,expiresAt,status:'pending',
-  notice:'QR chỉ tạo yêu cầu chuyển khoản. Ví sẽ KHÔNG được cộng tiền cho đến khi ngân hàng/cổng thanh toán xác minh.'});
-});
-app.get('/api/wallet/vietqr-intent/:reference',async(req,res)=>{
- const user=await getSession(req);if(!user)return res.status(401).json({error:'Bạn cần đăng nhập'});
- const entry=depositRequests.get(String(req.params.reference));
- if(!entry||entry.userId!==user.id)return res.status(404).json({error:'Không tìm thấy yêu cầu nạp'});
- res.json({id:entry.id,reference:req.params.reference,amount:entry.amount,status:entry.status,expiresAt:entry.expiresAt});
-});
+app.post('/api/wallet/vietqr-intent',(_req,res)=>res.status(410).json({
+ error:'Endpoint cũ không liên kết với ví PostgreSQL. Dùng /api/wallet/topup-orders trong SANDBOX.'
+}));
+app.get('/api/wallet/vietqr-intent/:reference',(_req,res)=>res.status(410).json({
+ error:'Dùng /api/wallet/me để xem đơn nạp đã xác minh.'
+}));
 
 app.get('/api/health',async(_req,res)=>{
  try {
