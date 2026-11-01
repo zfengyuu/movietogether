@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {extractYouTubeId} from '../src/utils/youtube.js';
+const id='M7lc1UVf-VE';
+test('accept normal YouTube URL',()=>assert.equal(extractYouTubeId(`https://www.youtube.com/watch?v=${id}&t=20`),id));
+test('accept short YouTube URL',()=>assert.equal(extractYouTubeId(`https://youtu.be/${id}`),id));
+test('accept shorts',()=>assert.equal(extractYouTubeId(`https://youtube.com/shorts/${id}`),id));
+test('accept live URL',()=>assert.equal(extractYouTubeId(`https://youtube.com/live/${id}`),id));
+test('accept embed URL',()=>assert.equal(extractYouTubeId(`https://www.youtube.com/embed/${id}`),id));
+test('block fake domains',()=>assert.equal(extractYouTubeId(`https://youtube.com.evil.test/watch?v=${id}`),''));
+test('reject non-YouTube',()=>assert.equal(extractYouTubeId(`https://example.com/watch?v=${id}`),''));
