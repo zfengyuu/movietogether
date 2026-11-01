@@ -1,4 +1,7 @@
-# VIMO CINÉ V5 · Rạp xem chung 3D
+# HộiRoom · Nền tảng phòng giải trí 3D
+
+**Các kiểu phòng:** Cinema 3D, DJ Club 3D, Music Box Karaoke. Giao diện chọn phòng, link private, SoundCloud/YouTube và mic WebRTC được mô tả trong [HộiRoom multi-room](docs/HoiRoom-multi-room.md).
+
 
 **Source:** React, Three.js/React Three Fiber, Drei, Socket.IO, Express, YouTube IFrame API.
 

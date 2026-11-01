@@ -148,3 +148,25 @@
 .topup-order{margin-top:16px;padding:13px;display:flex;flex-direction:column;gap:7px;background:#302448;border:1px solid #8e78ba;border-radius:12px;font-size:12px;overflow-wrap:anywhere}
 .topup-order small{color:#c9b3dd;line-height:1.5}
 .topup-dialog .panel-outline{margin-top:16px;width:100%}
+
+/* HộiRoom multi-category spaces */
+.room-categories{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:10px 0}
+.room-categories b{background:#242035;border:1px solid #695583;color:#e9dafb;border-radius:10px;padding:8px;font-size:12px}
+.check-line{display:flex!important;align-items:center;gap:8px}.check-line input{width:auto!important}
+.room3d-label{font:bold 22px system-ui;background:#160e2ad9;border:1px solid #a36afa;color:#efbaff;padding:7px 18px;border-radius:12px;white-space:nowrap}
+.soundcloud-screen{width:1280px;height:720px;background:#080a20;border:6px solid #883fde;border-radius:20px;overflow:hidden;pointer-events:auto}
+.soundcloud-screen iframe{border:0;display:block}
+/* HộiRoom multi-room creator and karaoke */
+.room-create-form{display:grid;gap:10px}.room-create-form label{font-size:12px;opacity:.9}
+.room-type-picker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.room-type-picker button{border:1px solid #55546a;border-radius:12px;padding:12px 4px;background:#222235;color:#eee;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
+.room-type-picker button.active{border-color:#b896ff;background:#3c2856;box-shadow:0 0 0 1px #9874f2 inset}
+.room-type-picker button span{font-size:23px}.room-type-picker button strong{font-size:12px}.room-type-picker button small{font-size:10px;color:#c2b7d6;text-align:center}
+.room-private-toggle{display:flex;align-items:center;gap:9px;padding:10px 0;cursor:pointer}.room-private-toggle input{width:18px;height:18px;accent-color:#a378fc}
+.room-private-note{font-size:12px;line-height:1.4;color:#c5b5e7}
+.room-category-pill{display:inline-flex;align-items:center;gap:5px;background:#362448a6;border:1px solid #785ca6;border-radius:20px;padding:4px 9px;font-size:11px;color:#eadcff;margin:7px 0}
+.karaoke-room-controls{display:grid;gap:10px}.karaoke-singer{padding:12px;background:#29253d;border:1px solid #655588;border-radius:12px}
+.karaoke-queue{padding:10px;background:#171827;border-radius:10px;display:grid;gap:5px}.karaoke-queue span{font-size:12px}
+.karaoke-mic-note{font-size:12px;color:#c9b9d8;line-height:1.55}
+.soundcloud-player iframe{border:0;width:1200px;height:450px;display:block;background:#141222}
+.room3d-label{color:#fff;text-shadow:0 0 18px #f08cf2;font-weight:900;font-size:36px;letter-spacing:5px;white-space:nowrap}

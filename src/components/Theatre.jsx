@@ -4,6 +4,7 @@ import { Html, OrbitControls, RoundedBox, Text, Environment } from '@react-three
 import * as THREE from 'three';
 import Hls from 'hls.js';
 import YouTubePlayer from './YouTubePlayer.jsx';
+import SoundCloudPlayer from './SoundCloudPlayer.jsx';
 
 const colors=['#c1a0fb','#f4a4c9','#87c8ff','#eab4f5','#f4cb96','#88d7d8'];
 const seatXY = i => ({x:(i%10-4.5)*1.75, y:0.35+Math.floor(i/10)*.105, z:-2.4+Math.floor(i/10)*1.2});
@@ -222,6 +223,27 @@ function DemoScreen({media, disco}){
   <Html transform center position={[0,0,.07]} distanceFactor={1.28} style={{pointerEvents:'none'}}><div className="demo-screen"><div className="sun"/><div className="wave wave-a"/><div className="wave wave-b"/><div className="demo-label">VIMO <span>CINÉ</span></div><div className="demo-sub">{media.type==='audio'?media.title:'WELCOME TO THE PARTY'}</div><div className="equalizer">{Array.from({length:22},(_,i)=><i key={i} style={{animationDelay:`${i*-.11}s`}}/>)}</div><div className="demo-ticker">✦ LIVE TOGETHER · DANCE TOGETHER · FEEL THE BEAT ✦</div></div></Html>
  </group>;
 }
+function CategoryDecor({category}) {
+ if(category==='dj')return <group>
+  <Box position={[0,.88,-5.7]} args={[5.3,1.15,1.32]} color="#211032" metalness={.7}/>
+  <Box position={[0,1.5,-5.35]} args={[4.7,.1,.75]} color="#f44de0" emissive="#b945ec" emissiveIntensity={2}/>
+  {[-1,1].map(side=><group key={side} position={[side*1.5,1.55,-5.05]}>
+   <mesh rotation={[-Math.PI/2,0,0]}><cylinderGeometry args={[.48,.48,.05,32]}/><meshStandardMaterial color="#212c39" metalness={.8}/></mesh>
+   <mesh position={[0,.04,0]} rotation={[-Math.PI/2,0,0]}><torusGeometry args={[.32,.04,8,32]}/><meshBasicMaterial color="#91eeff"/></mesh>
+  </group>)}
+  <Html center position={[0,2.25,-5.65]}><div className="room3d-label">🎧 HOIROOM DJ CLUB</div></Html>
+ </group>;
+ if(category==='musicbox')return <group>
+  {[-1,1].map(side=><group key={side} position={[side*7.5,.2,3.5]}>
+   <Box args={[4.2,.7,2.1]} position={[0,.2,0]} color="#655477"/>
+   <Box args={[4.2,1.3,.4]} position={[0,.75,.95]} color="#886ba0"/>
+  </group>)}
+  <Box position={[0,.6,-5.6]} args={[.14,1.8,.14]} color="#ced3e9" metalness={.9}/>
+  <mesh position={[0,1.55,-5.6]} rotation={[.3,0,-.3]}><capsuleGeometry args={[.10,.24,5,8]}/><meshStandardMaterial color="#f2c3f9" metalness={.7}/></mesh>
+  <Html center position={[0,2.25,-5.8]}><div className="room3d-label">🎤 MUSIC BOX KARAOKE</div></Html>
+ </group>;
+ return null;
+}
 function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled,volume,videoFocus,onVideoFocusChange,onEnableAudio,onDuration,onError}){
  const {camera}=useThree();const participants=room?.participants||[];const orbit=useRef();
  useEffect(()=>{const target=view==='stage'?[0,2.2,3]:[0,3,-3];if(view==='front')camera.position.set(0,8.7,19);else if(view==='top')camera.position.set(0,20,7);else if(view==='stage')camera.position.set(0,3.0,-7.3);else camera.position.set(13,10,19);camera.lookAt(...target);orbit.current?.target.set(...target);orbit.current?.update();},[view,camera]);
@@ -239,11 +261,14 @@ function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled
   <Box args={[15,.15,3.1]} position={[0,.06,-7.15]} color="#20262a"/>
   <Box args={[13.2,7.65,.3]} position={[0,4.8,-8.73]} color="#3d4843" metalness={.75}/>
   <Box args={[12.8,7.2,.18]} position={[0,4.8,-8.54]} color="#080516"/>
-  <Stage disco={room.disco} theme={room.stageTheme}/><DemoScreen media={room.media} disco={room.disco}/><ScreenVideo media={room.media} volume={volume} audioEnabled={audioEnabled} onEnded={onMediaEnded}/>
+  <Stage disco={room.disco} theme={room.stageTheme}/><CategoryDecor category={room.category}/><DemoScreen media={room.media} disco={room.disco}/><ScreenVideo media={room.media} volume={volume} audioEnabled={audioEnabled} onEnded={onMediaEnded}/>
   {/* HTML is attached to the real cinema plane. Drei transform projects the entire
       16:9 YouTube iframe in CSS3D, so it follows orbit and perspective exactly. */}
   {room.media.type==='youtube'&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.37]} zIndexRange={[4,2]} wrapperClass="vimo-3d-video-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
    <YouTubePlayer key={room.media.url} media={room.media} volume={volume} audioEnabled={audioEnabled} focus={videoFocus} onFocusChange={onVideoFocusChange} onEnableAudio={onEnableAudio} onEnded={onMediaEnded} onDuration={onDuration} onError={onError}/>
+  </Html>}
+  {room.media.type==='soundcloud'&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.37]} zIndexRange={[4,2]} wrapperClass="vimo-3d-video-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
+   <SoundCloudPlayer media={room.media} volume={volume} audioEnabled={audioEnabled} onEnded={onMediaEnded} onDuration={onDuration} onError={onError}/>
   </Html>}
   {room.photoActive&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.32]} zIndexRange={[5,3]} wrapperClass="vimo-3d-photo-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
    <div className="photo-projection vimo-photo-plane"><img src={room.photoActive.url} alt="Ảnh đang được chiếu ưu tiên"/><div className="photo-projection-caption"><strong>{room.photoActive.caption||'Khoảnh khắc đáng nhớ'}</strong><span>Ảnh của {room.photoActive.addedBy} · Đang hiển thị</span></div></div>
@@ -256,7 +281,7 @@ function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled
    <Box args={[.08,4.5,.11]} position={[11.20,2.35,-7.3+i*1.55]} color="#ffb890" emissive="#b95788" emissiveIntensity={1.1}/>
   </group>)}
   {Array.from({length:10},(_,i)=><Box key={i} args={[18,.12,.21]} position={[0,-.08+i*.105,-2.5+i*1.2]} color="#27252a"/>)}
-  <Chairs occupants={participants} onSeat={onSeat}/>
+  {room.category!=='dj'&&<Chairs occupants={participants} onSeat={onSeat}/>}
   {participants.map(p=><Avatar key={p.id} p={p} others={participants} isMe={you===p.id} onClick={onPerson} bpm={room.bpm} lastMessage={(messages||[]).filter(m=>m.userId===p.id&&Date.now()-m.time<5500).at(-1)}/>)}
   <Laser disco={room.disco}/>
   {room.disco&&<pointLight position={[0,6,-5]} intensity={22} distance={17} color="#d297ff"/>}
