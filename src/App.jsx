@@ -30,7 +30,7 @@ function App(){
  const [view,setView]=useState('front'),[volume,setVolume]=useState(.75),[audioEnabled,setAudioEnabled]=useState(false);
  const [videoFocus,setVideoFocus]=useState(false);
  const [chat,setChat]=useState(''),[url,setUrl]=useState(''),[title,setTitle]=useState(''),[messages,setMessages]=useState([]);
- const [reactions,setReactions]=useState([]),[dance,setDance]=useState('bounce'),[emojiOpen,setEmojiOpen]=useState(false),[depositAmount,setDepositAmount]=useState(20000),[depositInfo,setDepositInfo]=useState(null),[depositBusy,setDepositBusy]=useState(false),[qrConfigured,setQrConfigured]=useState(false);
+ const [sandboxQrUrl,setSandboxQrUrl]=useState(null);const [reactions,setReactions]=useState([]),[dance,setDance]=useState('bounce'),[emojiOpen,setEmojiOpen]=useState(false),[depositAmount,setDepositAmount]=useState(20000),[depositInfo,setDepositInfo]=useState(null),[depositBusy,setDepositBusy]=useState(false),[qrConfigured,setQrConfigured]=useState(false);
  const [online,setOnline]=useState(true),[clock,setClock]=useState(0),[uploadBusy,setUploadBusy]=useState(false),[uploadFile,setUploadFile]=useState(null),[giftFlash,setGiftFlash]=useState(null);
  const chatEnd=useRef(null),joinRef=useRef(null),roomRef=useRef(null),audioRef=useRef(null),uploadToken=useRef(null);
  roomRef.current=room;
@@ -125,7 +125,7 @@ function App(){
  const createDeposit=async()=>{
   if(!account)return toast('Đăng nhập để tạo mã VietQR');
   setDepositBusy(true);
-  try{const r=await fetch('/api/wallet/vietqr-intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:depositAmount})});const d=await r.json();if(!r.ok)throw Error(d.error||'Không tạo được mã QR');setDepositInfo(d);}
+  try{const r=await fetch('/api/wallet/topup-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:depositAmount})});const d=await r.json();if(!r.ok)throw Error(d.error||'Không tạo được mã QR');setDepositInfo(d);}
   catch(e){toast(e.message)}finally{setDepositBusy(false)}
  };
  const createSandboxTopup=async()=>{
@@ -133,7 +133,7 @@ function App(){
   try {
    const response=await fetch('/api/wallet/topup-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:topupAmount})});
    const data=await response.json();if(!response.ok)throw Error(data.error||'Không tạo được lệnh nạp');
-   setTopupOrder(data.order);toast('Đã tạo lệnh nạp SANDBOX. Không chuyển khoản tiền thật!');
+   setTopupOrder(data.order);setSandboxQrUrl(data.qrUrl||null);toast('Đã tạo lệnh nạp SANDBOX. Không chuyển khoản tiền thật!');
   }catch(e){toast(e.message);}
  };
  const submitPhoto=async()=>{
@@ -267,7 +267,7 @@ function App(){
     {!account?<><p>Vui lòng đăng nhập tài khoản để nạp ví.</p><button className="auth-primary" onClick={()=>{setTopupOpen(false);setAuthOpen(true)}}>Đăng nhập / Đăng ký</button></>:<>
       <label>Số tiền thử (đơn vị VND mô phỏng)</label><select value={topupAmount} onChange={e=>setTopupAmount(Number(e.target.value))}>{[10000,20000,50000,100000,200000,500000,1000000].includes(topupAmount)?[10000,20000,50000,100000,200000,500000,1000000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>):[topupAmount,10000,20000,50000,100000,200000,500000,1000000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>)}</select>
       <button className="auth-primary" onClick={createSandboxTopup}>Tạo lệnh nạp sandbox</button>
-      {topupOrder&&<div className="topup-order"><b>Đang chờ webhook có chữ ký</b><span>Mã: {topupOrder.code}</span><span>Số tiền: {topupOrder.amount.toLocaleString('vi-VN')}đ</span><small>Trạng thái: pending. Sau khi xác minh, hệ thống tự xử lý ảnh nếu phòng và tệp còn hiệu lực.</small></div>}
+      {topupOrder&&<div className="topup-order"><b>Đang chờ webhook có chữ ký</b><span>Mã: {topupOrder.code}</span><span>Số tiền: {topupOrder.amount.toLocaleString('vi-VN')}đ</span>{sandboxQrUrl&&<img src={sandboxQrUrl} alt="QR sandbox, không chuyển tiền thật" style={{maxWidth:230,width:'100%',borderRadius:12,margin:'12px auto',display:'block'}}/>}<small>CHỈ SANDBOX — KHÔNG chuyển tiền thật. Mã QR khớp mã đơn PostgreSQL; ví chỉ cộng sau webhook HMAC hợp lệ.</small></div>}
       {wallet.demoEnabled&&!wallet.demoCredited&&<button className="panel-outline" onClick={()=>send('wallet_demo_topup',{},'Đã nhận xu demo')}>Nhận 200.000 xu demo (một lần)</button>}
     </>}
    </div></div>}
