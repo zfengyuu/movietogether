@@ -46,7 +46,9 @@ app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff'); next
 // JSON fallback exists only for local development without a database.
 if(process.env.NODE_ENV==='production'&&!process.env.DATABASE_URL)throw Error('Production requires DATABASE_URL for persistent accounts.');
 const authDb=process.env.DATABASE_URL?await openPgAuth(process.env.DATABASE_URL):null;
-const authDir=resolve('auth-data');mkdirSync(authDir,{recursive:true});
+const authDir=resolve('auth-data');
+// Production users live in PostgreSQL; do not create unwritable JSON auth storage.
+if(!authDb)mkdirSync(authDir,{recursive:true});
 const accountFile=join(authDir,'accounts.json');
 let accounts=[];
 if(!authDb){try{accounts=JSON.parse(readFileSync(accountFile,'utf8'));if(!Array.isArray(accounts))accounts=[];}catch{accounts=[];}}
