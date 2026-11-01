@@ -16,7 +16,9 @@ import { photoCost, PHOTO_MAX_BYTES, DEMO_WALLET_CREDIT, freezePlaybackForPhoto,
 const app = express();
 const server = createServer(app);
 const port = Number(process.env.PORT || 3001);
-const origin = process.env.FRONTEND_ORIGIN || '*';
+const origin = process.env.FRONTEND_ORIGIN
+ ? process.env.FRONTEND_ORIGIN.split(',').map(x=>x.trim()).filter(Boolean)
+ : (process.env.NODE_ENV==='production' ? false : '*');
 const io = new Server(server, { cors: {origin, methods: ['GET','POST']}, maxHttpBufferSize: 30_000 });
 const walletDb=process.env.DATABASE_URL ? await openPgWallet(process.env.DATABASE_URL) : null;
 const paymentMode=process.env.PAYMENTS_MODE==='sandbox' && walletDb ? 'sandbox' : 'disabled';
@@ -44,7 +46,9 @@ app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff'); next
 // JSON fallback exists only for local development without a database.
 if(process.env.NODE_ENV==='production'&&!process.env.DATABASE_URL)throw Error('Production requires DATABASE_URL for persistent accounts.');
 const authDb=process.env.DATABASE_URL?await openPgAuth(process.env.DATABASE_URL):null;
-const authDir=resolve('auth-data');mkdirSync(authDir,{recursive:true});
+const authDir=resolve('auth-data');
+// Production users live in PostgreSQL; do not create unwritable JSON auth storage.
+if(!authDb)mkdirSync(authDir,{recursive:true});
 const accountFile=join(authDir,'accounts.json');
 let accounts=[];
 if(!authDb){try{accounts=JSON.parse(readFileSync(accountFile,'utf8'));if(!Array.isArray(accounts))accounts=[];}catch{accounts=[];}}
@@ -165,7 +169,8 @@ const demoWalletEnabled = process.env.NODE_ENV !== 'production' && process.env.D
 const wallets = new Map(); // temporary demo credits only, never a real-money ledger
 const depositRequests=new Map(); // pending VietQR intents; no auto-credit without payment-provider verification
 const photos = new Map(); // temporary, validated files only
-const photoDir = resolve('photo-uploads');
+const storageRoot = process.env.UPLOAD_ROOT ? resolve(process.env.UPLOAD_ROOT) : resolve('.');
+const photoDir = join(storageRoot, 'photo-uploads');
 mkdirSync(photoDir, {recursive:true});
 const MAX_PHOTO_FILES = 100;
 const MAX_PHOTO_QUEUE = 15;
@@ -190,7 +195,7 @@ const publicPhoto = p => p ? ({id:p.id,url:p.url,caption:p.caption,addedBy:p.add
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOADS = 150;
 const UPLOAD_TTL = 24 * 60 * 60 * 1000; // local demo only; use object storage in production
-const uploadDir = resolve('uploads');
+const uploadDir = join(storageRoot, 'uploads');
 mkdirSync(uploadDir, {recursive:true});
 const uploadedAudio = new Map();
 const supportedAudio = new Set(['.mp3','.m4a','.wav','.ogg','.aac','.flac']);
@@ -297,7 +302,15 @@ app.get('/api/wallet/vietqr-intent/:reference',async(req,res)=>{
  res.json({id:entry.id,reference:req.params.reference,amount:entry.amount,status:entry.status,expiresAt:entry.expiresAt});
 });
 
-app.get('/api/health',(_req,res)=>res.json({ok:true,rooms:rooms.size,online:[...rooms.values()].reduce((s,r)=>s+r.participants.size,0)}));
+app.get('/api/health',async(_req,res)=>{
+ try {
+  if(walletDb)await walletDb.ping();
+  res.json({ok:true,database:walletDb?'connected':'demo',rooms:rooms.size,online:[...rooms.values()].reduce((s,r)=>s+r.participants.size,0)});
+ }catch(error){
+  console.error('Healthcheck: PostgreSQL unavailable',error.message);
+  res.status(503).json({ok:false,database:'unavailable'});
+ }
+});
 app.get('/api/rooms',(_req,res)=>res.json([...rooms.values()].filter(r=>!r.password&&!r.isPrivate).map(r=>({id:r.id,name:r.name,category:r.category,online:r.participants.size,maxPeople:r.maxPeople}))));
 const roomCreateTimes=new Map();
 app.post('/api/rooms',(req,res)=>{

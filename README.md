@@ -1,3 +1,5 @@
+> 🚀 **Render + Cloudflare deployment:** [docs/deploy-render-cloudflare.md](docs/deploy-render-cloudflare.md). The `render.yaml` Blueprint provisions the app and PostgreSQL in Singapore, runs SQL migrations, and stores media on a persistent disk. Payment mode stays disabled by default.
+
 # HộiRoom · Nền tảng phòng giải trí 3D
 
 **Các kiểu phòng:** Cinema 3D, DJ Club 3D, Music Box Karaoke. Giao diện chọn phòng, link private, SoundCloud/YouTube và mic WebRTC được mô tả trong [HộiRoom multi-room](docs/HoiRoom-multi-room.md).

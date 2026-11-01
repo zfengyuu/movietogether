@@ -19,6 +19,7 @@ export function makeWalletStore(pool){
   return rows[0];
  };
  return {
+  async ping(){await pool.query('SELECT 1');return true;},
   async getWallet(userId){
    return transaction(async c=>{
     const wallet=round(await ensure(c,userId));
