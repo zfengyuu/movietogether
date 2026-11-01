@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, renameSync } from 'node:fs';
 import { join, resolve, extname } from 'node:path';
 import crypto from 'node:crypto';
+import {validateRoomOptions,canJoinRoom,soundcloudTrack,nextSinger} from '../shared/rooms.js';
 import { MAX_STAGE_DANCERS, SKIN_PRICES, votesNeeded, stageSlot, queueOrder } from '../shared/room-rules.js';
 import { normalizeTopupAmount, createPaymentCode, verifySePaySignature } from '../shared/payments.js';
 import { openPgWallet } from './wallet-store.js';
@@ -170,16 +171,17 @@ const rooms = new Map();
 const safeText = (v, n=60) => String(v ?? '').replace(/[\u0000-\u001F\u007F<>]/g,'').trim().slice(0,n);
 const roomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase();
 const sample = {type:'demo', url:'', title:'VIMO CINÉ • DISCO NIGHT', duration:240};
-const newRoom = (id, name, password='', permanent=false) => ({
- id, name, password, permanent, createdAt:Date.now(), hostId:null, participants:new Map(), messages:[], queue:[], votes:new Set(),
- media:{...sample, playing:false, position:0, updatedAt:Date.now()}, photoActive:null, photoQueue:[], disco:true, bpm:128, stageTheme:'neon', supportCount:0, gifts:[],
+const newRoom = (id, name, password='', permanent=false,options={}) => ({
+ id, name, password, permanent, category:options.category||'cinema', maxPeople:options.maxPeople||100, isPrivate:!!options.isPrivate, inviteToken:options.isPrivate?crypto.randomBytes(24).toString('hex'):null, karaokeQueue:[], karaokeSinger:null, createdAt:Date.now(), hostId:null, participants:new Map(), messages:[], queue:[], votes:new Set(),
+ media:{...sample, playing:false, position:0, updatedAt:Date.now()}, photoActive:null, photoQueue:[], photoPlayback:null, disco:true, bpm:128, stageTheme:'neon', supportCount:0, gifts:[],
 });
 rooms.set('DISCO', newRoom('DISCO','Phòng Disco cộng đồng','',true));
+rooms.set('CLUB',newRoom('CLUB','DJ Club công cộng','',true,{category:'dj',maxPeople:50}));
+rooms.set('KBOX',newRoom('KBOX','Music Box cộng đồng','',true,{category:'musicbox',maxPeople:8}));
 const elapsedMedia = r => Math.max(0, r.media.position + (r.media.playing ? (Date.now()-r.media.updatedAt)/1000 : 0));
 const mediaSnapshot = r => ({...r.media, position:elapsedMedia(r), updatedAt:Date.now()});
 const participants = r => [...r.participants.values()];
-const snapshot = r => ({ id:r.id, name:r.name, hasPassword:!!r.password, hostId:r.hostId, participants:participants(r),
- messages:r.messages.slice(-70), queue:r.queue, votes:r.votes.size, votedIds:[...r.votes], skipNeeded:votesNeeded(r.participants.size), media:mediaSnapshot(r),photoActive:publicPhoto(r.photoActive),photoQueue:r.photoQueue.map(publicPhoto),disco:r.disco,bpm:r.bpm,stageTheme:r.stageTheme,supportCount:r.supportCount,gifts:r.gifts.slice(-20),maxPeople:MAX_PEOPLE });
+const snapshot = r => ({id:r.id,name:r.name,category:r.category,isPrivate:r.isPrivate,karaokeQueue:r.karaokeQueue,karaokeSinger:r.karaokeSinger,hasPassword:!!r.password,hostId:r.hostId,participants:participants(r),messages:r.messages.slice(-70),queue:r.queue,votes:r.votes.size,votedIds:[...r.votes],skipNeeded:votesNeeded(r.participants.size),media:mediaSnapshot(r),photoActive:publicPhoto(r.photoActive),photoQueue:r.photoQueue.map(publicPhoto),disco:r.disco,bpm:r.bpm,stageTheme:r.stageTheme,supportCount:r.supportCount,gifts:r.gifts.slice(-20),maxPeople:r.maxPeople});
 const emitRoom = r => io.to(r.id).emit('room_state',snapshot(r));
 const err = (ack,message) => typeof ack==='function' && ack({ok:false,error:message});
 const success = (ack,info={})=>typeof ack==='function'&&ack({ok:true,...info});
@@ -189,6 +191,8 @@ const release = socket => {
  const r=inRoom(socket); if(!r) return;
  const p=r.participants.get(socket.id);if(!p)return;
  r.participants.delete(socket.id);
+ r.karaokeQueue=r.karaokeQueue.filter(id=>id!==socket.id);
+ if(r.karaokeSinger===socket.id)r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());
  const voterKey=socket.data.accountId||socket.id;
  if(!socket.data.accountId || !participants(r).some(other=>other.accountId===socket.data.accountId))r.votes.delete(voterKey);
  for(const item of r.queue){if(!socket.data.accountId&&item.voters?.includes(socket.id)){item.voters=item.voters.filter(id=>id!==socket.id);item.votes=item.voters.length;}}r.queue.sort(queueOrder);socket.leave(r.id);socket.data.roomId=null;socket.data.uploadToken=null;
@@ -210,6 +214,7 @@ const normalizeMedia = (raw) => {
   videoId=u.searchParams.get('v')||u.pathname.match(/^\/(?:shorts|embed|live)\/([\w-]{11})/)?.[1]||'';
  }else if(['youtu.be','www.youtu.be'].includes(h)){videoId=u.pathname.slice(1).split('/')[0]||'';}
  if(/^[\w-]{11}$/.test(videoId))return {type:'youtube',url:`https://www.youtube.com/watch?v=${videoId}`,title,duration:0};
+ const sc=soundcloudTrack(url);if(sc)return {type:'soundcloud',url:sc,title,duration:0};
  // Direct MP4/HLS URLs only. Browser CORS and remote hosting restrictions apply.
  const extension=extname(u.pathname).toLowerCase();
  if(supportedAudio.has(extension))return {type:'audio',url:u.href,title,duration:0};
@@ -255,12 +260,16 @@ app.get('/api/wallet/vietqr-intent/:reference',(req,res)=>{
 });
 
 app.get('/api/health',(_req,res)=>res.json({ok:true,rooms:rooms.size,online:[...rooms.values()].reduce((s,r)=>s+r.participants.size,0)}));
-app.get('/api/rooms',(_req,res)=>res.json([...rooms.values()].filter(r=>!r.password).map(r=>({id:r.id,name:r.name,online:r.participants.size,maxPeople:MAX_PEOPLE}))));
+app.get('/api/rooms',(_req,res)=>res.json([...rooms.values()].filter(r=>!r.password&&!r.isPrivate).map(r=>({id:r.id,name:r.name,category:r.category,online:r.participants.size,maxPeople:r.maxPeople}))));
+const roomCreateTimes=new Map();
 app.post('/api/rooms',(req,res)=>{
+ const ip=req.ip||'unknown';if(Date.now()-(roomCreateTimes.get(ip)||0)<2000)return res.status(429).json({error:'Hãy đợi ít nhất 2 giây trước khi tạo phòng khác.'});
+ if(rooms.size>=300)return res.status(503).json({error:'Đã đạt giới hạn 300 phòng thử nghiệm.'});
  const name=safeText(req.body?.name,50)||'Phòng của tôi';
  const password=safeText(req.body?.password,32);
+ const options=validateRoomOptions(req.body);if(options.error)return res.status(400).json({error:options.error});
  let id;do{id=roomCode();}while(rooms.has(id));
- rooms.set(id,newRoom(id,name,password));res.status(201).json({ok:true,id,name,hasPassword:!!password});
+ const room=newRoom(id,name,password,false,options);rooms.set(id,room);roomCreateTimes.set(ip,Date.now());res.status(201).json({ok:true,id,name,category:room.category,maxPeople:room.maxPeople,isPrivate:room.isPrivate,inviteToken:room.inviteToken,hasPassword:!!password});
 });
 // Upload an audio track and make it available to everyone in the room.
 // This demo stores files on disk temporarily; proxy/CDN and storage quotas are needed in production.
@@ -367,13 +376,13 @@ io.on('connection', socket => {
  socket.on('join_room',(raw,ack)=>{
   const id=safeText(raw?.roomId,16).toUpperCase();const r=rooms.get(id);
   if(!r)return err(ack,'Phòng không tồn tại. Hãy tạo phòng mới.');
-  if(r.password && r.password!==String(raw?.password??''))return err(ack,'Mật khẩu phòng không đúng.');
-  if(r.participants.size>=MAX_PEOPLE)return err(ack,'Phòng đã đủ 100 người.');
+  if(!canJoinRoom(r,{password:String(raw?.password??''),invite:String(raw?.invite||'')}))return err(ack,'Link mời hoặc mật khẩu phòng không hợp lệ.');
+  if(r.participants.size>=r.maxPeople)return err(ack,`Phòng đã đủ ${r.maxPeople} người.`);
   if(inRoom(socket))release(socket);
   const used=new Set(participants(r).filter(p=>p.seat!==null).map(p=>p.seat));
-  let seat=Array.from({length:100},(_,i)=>i).find(i=>!used.has(i));seat??=null;
+  let seat=r.category==='cinema'?Array.from({length:r.maxPeople},(_,i)=>i).find(i=>!used.has(i)):null;seat??=null;
   const user=accounts.find(a=>a.id===socket.data.accountId);
-  const p={id:socket.id,name:user?.username||safeText(raw?.name,22)||'Khách xem phim',seat,action:'sit',dance:'bounce',zone:'seat',stageSlot:null,skin:'default',accountId:socket.data.accountId||null,color:Math.floor(Math.random()*6),hair:0,accessory:0,pants:0,joinedAt:Date.now()};
+  const p={id:socket.id,name:user?.username||safeText(raw?.name,22)||'Khách xem phim',seat,action:r.category==='dj'?'dance':'sit',dance:'bounce',zone:r.category==='dj'?'floor':'seat',stageSlot:null,skin:'default',accountId:socket.data.accountId||null,color:Math.floor(Math.random()*6),hair:0,accessory:0,pants:0,joinedAt:Date.now()};
   socket.data.uploadToken=crypto.randomBytes(24).toString('hex');
   // Unpredictable bearer token persists between reloads for THIS DEMO ONLY.
   // Real money requires authenticated accounts and a transactional database.
@@ -388,9 +397,10 @@ io.on('connection', socket => {
   emitSystem(r,`${p.name} đã vào rạp`);changes(r);
  });
  socket.on('leave_room',()=>release(socket));
- socket.on('choose_seat',(seat,ack)=>{
+ socket.on('room_invite',(_,ack)=>{const r=inRoom(socket);if(!r||r.hostId!==socket.id)return err(ack,'Chỉ chủ phòng được lấy link mời.');success(ack,{inviteToken:r.inviteToken,isPrivate:r.isPrivate});});
+  socket.on('choose_seat',(seat,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
-  if(!Number.isInteger(seat)||seat<0||seat>=100)return err(ack,'Ghế không hợp lệ');
+  if(r.category!=='cinema'||!Number.isInteger(seat)||seat<0||seat>=r.maxPeople)return err(ack,'Ghế không hợp lệ');
   if(participants(r).some(p=>p.id!==socket.id&&p.seat===seat))return err(ack,'Ghế đã có người ngồi');
   const p=r.participants.get(socket.id);p.seat=seat;p.action='sit';p.zone='seat';p.stageSlot=null;changes(r);success(ack);
  });
@@ -490,6 +500,34 @@ io.on('connection', socket => {
   if(Date.now()-(socket.data.reactAt||0)<1200)return;
   if(!['❤️','🔥','👏','🎉','😂','🕺'].includes(emoji))return;
   socket.data.reactAt=Date.now();io.to(r.id).emit('reaction',{id:crypto.randomUUID(),userId:socket.id,emoji,time:Date.now()});
+ });
+ // WebRTC signaling is relayed only among members of the same Music Box.
+ socket.on('karaoke_signal',(raw)=>{
+  const r=inRoom(socket),target=String(raw?.to||'');
+  if(!r||r.category!=='musicbox'||!r.participants.has(target)||target===socket.id)return;
+  if(![socket.id,target].includes(r.karaokeSinger))return;
+  if(!['offer','answer','ice'].includes(raw?.type))return;
+  if(!raw.data||typeof raw.data!=='object')return;
+  const payload=JSON.stringify(raw.data);if(payload.length>12000)return;
+  io.to(target).emit('karaoke_signal',{from:socket.id,type:raw.type,data:raw.data});
+ });
+ socket.on('karaoke_enqueue',(_,ack)=>{
+  const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
+  if(r.category!=='musicbox')return err(ack,'Chỉ dùng trong Music Box');
+  if(r.karaokeQueue.includes(socket.id)||r.karaokeSinger===socket.id)return err(ack,'Bạn đã có trong hàng chờ hát');
+  r.karaokeQueue.push(socket.id);if(!r.karaokeSinger)r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());
+  void enforceKaraokeMic(r);changes(r);success(ack);
+ });
+ socket.on('karaoke_leave',(_,ack)=>{
+  const r=inRoom(socket);if(!r||r.category!=='musicbox')return err(ack,'Không thuộc Music Box');
+  r.karaokeQueue=r.karaokeQueue.filter(id=>id!==socket.id);if(r.karaokeSinger===socket.id)r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());
+  void enforceKaraokeMic(r);changes(r);success(ack);
+ });
+ socket.on('karaoke_next',(_,ack)=>{
+  const r=inRoom(socket);if(!r||r.category!=='musicbox')return err(ack,'Không thuộc Music Box');
+  if(r.hostId!==socket.id)return err(ack,'Chỉ chủ phòng chuyển lượt hát');
+  const current=r.karaokeSinger;r.karaokeQueue=r.karaokeQueue.filter(id=>id!==current);r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());
+  void enforceKaraokeMic(r);changes(r);success(ack);
  });
  socket.on('queue_add',(raw,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
