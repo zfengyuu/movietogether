@@ -1,3 +1,5 @@
+> ☁️ **Cloudflare Containers deployment:** [Cloudflare + VietQR sandbox setup](docs/deploy-cloudflare-vietqr.md). Use `wrangler.jsonc` and `Dockerfile.cloudflare` from branch `deploy/cloudflare-containers-vietqr-20261101`. Requires Workers Paid and external PostgreSQL. Real money is disabled.
+
 > 🚀 **Render + Cloudflare deployment:** [docs/deploy-render-cloudflare.md](docs/deploy-render-cloudflare.md). The `render.yaml` Blueprint provisions the app and PostgreSQL in Singapore, runs SQL migrations, and stores media on a persistent disk. Payment mode stays disabled by default.
 
 # HộiRoom · Nền tảng phòng giải trí 3D
