@@ -5,14 +5,51 @@ import { Server } from 'socket.io';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, renameSync } from 'node:fs';
 import { join, resolve, extname } from 'node:path';
 import crypto from 'node:crypto';
-import { MAX_STAGE_DANCERS, SKIN_PRICES, votesNeeded, stageSlot, queueOrder } from '../shared/room-rules.js';
-import { photoCost, PHOTO_MAX_BYTES, DEMO_WALLET_CREDIT } from '../shared/photo.js';
+import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { normalizeTopupAmount, createPaymentCode, verifySePaySignature, applyVerifiedPayment } from '../shared/payments.js';
+import { openPgWallet } from './wallet-store.js';
+import {validateRoomOptions,canJoinRoom,soundcloudTrack,nextSinger} from '../shared/rooms.js';
+import { photoCost, PHOTO_MAX_BYTES, DEMO_WALLET_CREDIT, freezePlaybackForPhoto, restorePlaybackAfterPhotos, PHOTO_MIN_SECONDS, PHOTO_MAX_SECONDS } from '../shared/photo.js';
 
 const app = express();
 const server = createServer(app);
 const port = Number(process.env.PORT || 3001);
 const origin = process.env.FRONTEND_ORIGIN || '*';
 const io = new Server(server, { cors: {origin, methods: ['GET','POST']}, maxHttpBufferSize: 30_000 });
+// An unsigned client-side confirmation is NEVER sufficient to credit a wallet.
+// Signed SePay sandbox webhook. Live money requires a transactional SQL ledger first.
+const walletDb = process.env.DATABASE_URL ? await openPgWallet(process.env.DATABASE_URL) : null;
+// Sandbox is only enabled when PostgreSQL transactions are available. Never charge real VND here.
+const paymentMode = process.env.PAYMENTS_MODE === 'sandbox' && walletDb ? 'sandbox' : 'disabled';
+const sepaySecret = process.env.SEPAY_WEBHOOK_SECRET || '';
+const bankAccount = process.env.VIETQR_BANK_ACCOUNT || '';
+const bankCode = process.env.VIETQR_BANK_CODE || '';
+const bankHolder = process.env.VIETQR_ACCOUNT_NAME || '';
+const livekitAdmin=process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET ? new RoomServiceClient(process.env.LIVEKIT_URL.replace(/^wss:/,'https:').replace(/^ws:/,'http:'),process.env.LIVEKIT_API_KEY,process.env.LIVEKIT_API_SECRET):null;
+const paymentStoreFile = join(resolve('auth-data'),'wallet-state.json');
+let paymentState={wallets:{},orders:{},transactions:{}};
+try { paymentState=JSON.parse(readFileSync(paymentStoreFile,'utf8')); } catch {}
+for(const key of ['wallets','orders','transactions'])if(!paymentState[key]||typeof paymentState[key]!=='object')paymentState[key]={};
+function savePaymentState(){const tmp=paymentStoreFile+'.tmp';writeFileSync(tmp,JSON.stringify(paymentState),{mode:0o600});renameSync(tmp,paymentStoreFile);}
+function userWallet(id){
+ if(!paymentState.wallets[id]){paymentState.wallets[id]={balance:0,demoCredited:false,ledger:[]};savePaymentState();}
+ return paymentState.wallets[id];
+}
+const pendingPhotoRequests=new Map(); // only staged references; no money is debited until photo is admitted
+app.post('/api/webhooks/sepay', express.raw({type:'application/json',limit:'32kb'}),async(req,res)=>{
+ if(paymentMode!=='sandbox'||!sepaySecret||!bankAccount)return res.status(503).json({success:false});
+ if(!verifySePaySignature(req.body,req.headers['x-sepay-timestamp'],req.headers['x-sepay-signature'],sepaySecret))return res.status(401).json({success:false});
+ let payload;try{payload=JSON.parse(req.body.toString('utf8'));}catch{return res.status(400).json({success:false});}
+ try{
+  const receipt=await walletDb.creditVerifiedPayment(payload,bankAccount);
+  if(!receipt.ok)return res.status(422).json({success:false,error:receipt.reason});
+  if(!receipt.duplicate){
+   for(const socket of io.sockets.sockets.values())if(socket.data.accountId===receipt.userId)await sendWallet(socket);
+   await resumePendingPhoto(receipt.userId);
+  }
+  return res.status(200).json({success:true,duplicate:!!receipt.duplicate});
+ }catch(error){console.error('Webhook transaction failed',error);return res.status(503).json({success:false});}
+});
 app.use(express.json({ limit: '8kb' }));
 app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff'); next();});
 
@@ -78,12 +115,29 @@ app.post('/api/auth/login',(req,res)=>{
  failedLogins.delete(key);createSession(req,res,user);
 });
 app.post('/api/auth/logout',(req,res)=>{sessions.delete(parseCookie(req));res.setHeader('Set-Cookie',sessionCookie(req,'',0));res.json({ok:true});});
+app.get('/api/wallet/me',async(req,res)=>{
+ const user=getSession(req);if(!user)return res.status(401).json({error:'Vui lòng đăng nhập.'});
+ try{
+  if(walletDb){const w=await walletDb.getWallet(user.id);return res.json({ok:true,user:publicUser(user),balance:w.balance,ledger:w.ledger.slice(0,30),orders:await walletDb.getOrders(user.id),paymentsMode:paymentMode});}
+  const w=userWallet(user.id);return res.json({ok:true,user:publicUser(user),balance:w.balance,ledger:w.ledger.slice(-30).reverse(),orders:[],paymentsMode:'disabled'});
+ }catch{return res.status(503).json({error:'Ví tạm thời không sẵn sàng.'});}
+});
+app.post('/api/wallet/topup-orders',async(req,res)=>{
+ const user=getSession(req);if(!user)return res.status(401).json({error:'Vui lòng đăng nhập.'});
+ if(paymentMode!=='sandbox')return res.status(503).json({error:'Chưa bật môi trường thanh toán sandbox PostgreSQL. Không nạp tiền thật.'});
+ if(!sepaySecret||!bankAccount)return res.status(503).json({error:'Thiếu cấu hình SePay sandbox / tài khoản mẫu.'});
+ const amount=normalizeTopupAmount(req.body?.amount);if(amount===null)return res.status(400).json({error:'Nạp từ 10.000đ đến 1.000.000đ, bội số 1.000đ.'});
+ try{
+  const order=await walletDb.createTopupOrder(user.id,amount,createPaymentCode());
+  return res.status(201).json({ok:true,order,qrUrl:null,message:'Chỉ sandbox. KHÔNG chuyển khoản thật. Kiểm tra webhook có chữ ký HMAC hợp lệ.'});
+ }catch(error){console.error('Topup order failed',error);return res.status(503).json({error:'Không tạo được đơn nạp.'});}
+});
+
 
 const MAX_PEOPLE = 100;
 // Local demo credits only; NEVER deposit real money based on a button click.
 const demoWalletEnabled = process.env.NODE_ENV !== 'production' && process.env.DEMO_WALLET_ENABLED !== 'false';
-const wallets = new Map(); // temporary demo credits only, never a real-money ledger
-const depositRequests=new Map(); // pending VietQR intents; no auto-credit without payment-provider verification
+const wallets = new Map(); // bearer token -> {balance, demoCredited, ledger}; RAM only
 const photos = new Map(); // temporary, validated files only
 const photoDir = resolve('photo-uploads');
 mkdirSync(photoDir, {recursive:true});
@@ -98,10 +152,12 @@ const detectImage = buffer => {
  if (['GIF87a','GIF89a'].includes(buffer.toString('ascii',0,6))) return {ext:'.gif',type:'image/gif'};
  return null;
 };
-const walletOf = socket => wallets.get(socket.data.walletToken);
-const sendWallet = socket => {
- const w=walletOf(socket);
- socket.emit('wallet_state', {balance:w?.balance||0, demoEnabled:demoWalletEnabled, demoCredited:!!w?.demoCredited, ledger:w?.ledger.slice(-12).reverse()||[], ownedSkins:w?.skins||[],realPaymentsEnabled:false});
+const walletOf = socket => socket.data.accountId ? userWallet(socket.data.accountId) : wallets.get(socket.data.walletToken);
+const sendWallet = async socket => {
+ try{
+  const w=walletDb && socket.data.accountId ? await walletDb.getWallet(socket.data.accountId) : walletOf(socket);
+  socket.emit('wallet_state',{balance:w?.balance||0, demoEnabled:demoWalletEnabled, demoCredited:!!w?.demoCredited, ledger:walletDb&&socket.data.accountId?w?.ledger.slice(0,12)||[]:w?.ledger.slice(-12).reverse()||[],accountLinked:!!socket.data.accountId,realPaymentsEnabled:false,paymentsMode:paymentMode});
+ }catch(error){console.error('wallet_state failed',error);socket.emit('wallet_error','Không thể đọc ví.');}
 };
 const publicPhoto = p => p ? ({id:p.id,url:p.url,caption:p.caption,addedBy:p.addedBy,duration:p.duration,cost:p.cost,startedAt:p.startedAt,endsAt:p.endsAt}) : null;
 
@@ -126,17 +182,19 @@ const looksLikeAudio = (buf, ext) => {
 const rooms = new Map();
 const safeText = (v, n=60) => String(v ?? '').replace(/[\u0000-\u001F\u007F<>]/g,'').trim().slice(0,n);
 const roomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase();
-const sample = {type:'demo', url:'', title:'VIMO CINÉ • DISCO NIGHT', duration:240};
-const newRoom = (id, name, password='', permanent=false) => ({
- id, name, password, permanent, createdAt:Date.now(), hostId:null, participants:new Map(), messages:[], queue:[], votes:new Set(),
- media:{...sample, playing:false, position:0, updatedAt:Date.now()}, photoActive:null, photoQueue:[], disco:true, bpm:128, stageTheme:'neon', supportCount:0, gifts:[],
+const sample = {type:'demo', url:'', title:'DISCO NIGHT • 128 BPM', duration:240};
+const newRoom = (id, name, password='', permanent=false,options={}) => ({
+ id, name, password, permanent, category:options.category||'cinema', maxPeople:options.maxPeople||100, isPrivate:!!options.isPrivate, inviteToken:options.isPrivate?crypto.randomBytes(24).toString('hex'):null, karaokeQueue:[], karaokeSinger:null, createdAt:Date.now(), hostId:null, participants:new Map(), messages:[], queue:[], votes:new Set(),
+ media:{...sample, playing:false, position:0, updatedAt:Date.now()}, photoActive:null, photoQueue:[], photoPlayback:null, disco:true, bpm:128, stageTheme:'neon', supportCount:0, gifts:[],
 });
 rooms.set('DISCO', newRoom('DISCO','Phòng Disco cộng đồng','',true));
+rooms.set('CLUB',newRoom('CLUB','DJ Club công cộng','',true,{category:'dj',maxPeople:50}));
+rooms.set('KBOX',newRoom('KBOX','Music Box cộng đồng','',true,{category:'musicbox',maxPeople:8}));
 const elapsedMedia = r => Math.max(0, r.media.position + (r.media.playing ? (Date.now()-r.media.updatedAt)/1000 : 0));
 const mediaSnapshot = r => ({...r.media, position:elapsedMedia(r), updatedAt:Date.now()});
 const participants = r => [...r.participants.values()];
-const snapshot = r => ({ id:r.id, name:r.name, hasPassword:!!r.password, hostId:r.hostId, participants:participants(r),
- messages:r.messages.slice(-70), queue:r.queue, votes:r.votes.size, votedIds:[...r.votes], skipNeeded:votesNeeded(r.participants.size), media:mediaSnapshot(r),photoActive:publicPhoto(r.photoActive),photoQueue:r.photoQueue.map(publicPhoto),disco:r.disco,bpm:r.bpm,stageTheme:r.stageTheme,supportCount:r.supportCount,gifts:r.gifts.slice(-20),maxPeople:MAX_PEOPLE });
+const snapshot = r => ({ id:r.id, name:r.name, category:r.category,isPrivate:r.isPrivate,karaokeQueue:r.karaokeQueue,karaokeSinger:r.karaokeSinger,hasPassword:!!r.password, hostId:r.hostId, participants:participants(r),
+ messages:r.messages.slice(-70), queue:r.queue, votes:r.votes.size, votedIds:[...r.votes], skipNeeded:Math.max(2,Math.ceil(r.participants.size*.35)), media:mediaSnapshot(r),photoActive:publicPhoto(r.photoActive),photoQueue:r.photoQueue.map(publicPhoto),disco:r.disco,bpm:r.bpm,stageTheme:r.stageTheme,supportCount:r.supportCount,gifts:r.gifts.slice(-20),maxPeople:r.maxPeople });
 const emitRoom = r => io.to(r.id).emit('room_state',snapshot(r));
 const err = (ack,message) => typeof ack==='function' && ack({ok:false,error:message});
 const success = (ack,info={})=>typeof ack==='function'&&ack({ok:true,...info});
@@ -145,10 +203,7 @@ const emitSystem = (r,txt) => { const msg={id:crypto.randomUUID(),system:true,te
 const release = socket => {
  const r=inRoom(socket); if(!r) return;
  const p=r.participants.get(socket.id);if(!p)return;
- r.participants.delete(socket.id);
- const voterKey=socket.data.accountId||socket.id;
- if(!socket.data.accountId || !participants(r).some(other=>other.accountId===socket.data.accountId))r.votes.delete(voterKey);
- for(const item of r.queue){if(!socket.data.accountId&&item.voters?.includes(socket.id)){item.voters=item.voters.filter(id=>id!==socket.id);item.votes=item.voters.length;}}r.queue.sort(queueOrder);socket.leave(r.id);socket.data.roomId=null;socket.data.uploadToken=null;
+ r.participants.delete(socket.id);r.votes.delete(socket.id);r.karaokeQueue=r.karaokeQueue.filter(id=>id!==socket.id);if(r.karaokeSinger===socket.id)r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());void enforceKaraokeMic(r);socket.leave(r.id);socket.data.roomId=null;socket.data.uploadToken=null;
  if(r.hostId===socket.id) r.hostId=participants(r)[0]?.id||null;
  emitSystem(r, `${p.name} đã rời phòng`);
  emitRoom(r);
@@ -167,60 +222,45 @@ const normalizeMedia = (raw) => {
   videoId=u.searchParams.get('v')||u.pathname.match(/^\/(?:shorts|embed|live)\/([\w-]{11})/)?.[1]||'';
  }else if(['youtu.be','www.youtu.be'].includes(h)){videoId=u.pathname.slice(1).split('/')[0]||'';}
  if(/^[\w-]{11}$/.test(videoId))return {type:'youtube',url:`https://www.youtube.com/watch?v=${videoId}`,title,duration:0};
+ const sc=soundcloudTrack(url);if(sc)return {type:'soundcloud',url:sc,title,duration:0};
  // Direct MP4/HLS URLs only. Browser CORS and remote hosting restrictions apply.
  const extension=extname(u.pathname).toLowerCase();
  if(supportedAudio.has(extension))return {type:'audio',url:u.href,title,duration:0};
  if(!['.mp4','.webm','.m3u8'].includes(extension))return null;
  return {type:'file',url:u.href,title,duration:0};
 };
-const nextMedia = r => {r.queue.sort(queueOrder);r.media = {...(r.queue.shift()||sample),position:0,playing:true,updatedAt:Date.now()};r.votes.clear();};
+const nextMedia = r => {r.media = {...(r.queue.shift()||sample),position:0,playing:true,updatedAt:Date.now()};r.votes.clear();};
 const changes = r => {emitRoom(r);};
+async function enforceKaraokeMic(room){
+ if(!livekitAdmin || room.category!=='musicbox')return;
+ try{
+  const online=await livekitAdmin.listParticipants(room.id);
+  await Promise.all(online.map(p=>livekitAdmin.updateParticipant(room.id,p.identity,undefined,{canSubscribe:true,canPublish:p.identity===room.karaokeSinger})));
+ }catch(e){console.warn('Mic permissions: LiveKit not yet available',e.message)}
+}
 const advancePhoto = r => {
+ // If the timer fires late, start the next photo now, never cut into paid time.
  r.photoActive = r.photoQueue.shift() || null;
  if (r.photoActive) {
   r.photoActive.startedAt=Date.now();
-  r.photoActive.endsAt=Date.now()+r.photoActive.duration*1000;
+  r.photoActive.endsAt=r.photoActive.startedAt+r.photoActive.duration*1000;
+ } else {
+  restorePlaybackAfterPhotos(r);
  }
  emitRoom(r);
 };
 
-
-// VietQR generates transfer instructions, not proof of payment. Only authenticated
-// users can request a unique reference. No client action may credit a wallet.
-app.get('/api/wallet/vietqr-config',(_req,res)=>{
- const configured=!!(process.env.VIMO_BANK_ID&&process.env.VIMO_BANK_ACCOUNT&&process.env.VIMO_BANK_NAME);
- res.json({configured,verifiedPaymentsEnabled:false});
-});
-app.post('/api/wallet/vietqr-intent',(req,res)=>{
- const user=getSession(req);
- if(!user)return res.status(401).json({error:'Đăng nhập để tạo mã nạp ví.'});
- const {VIMO_BANK_ID,VIMO_BANK_ACCOUNT,VIMO_BANK_NAME}=process.env;
- if(!VIMO_BANK_ID||!VIMO_BANK_ACCOUNT||!VIMO_BANK_NAME)return res.status(503).json({error:'Chủ rạp chưa cấu hình VietQR.'});
- const amount=Number(req.body?.amount);
- if(!Number.isInteger(amount)||amount<10000||amount>1000000||amount%10000!==0)
-  return res.status(400).json({error:'Chọn số tiền từ 10.000đ đến 1.000.000đ theo bước 10.000đ.'});
- const reference='VIMO'+crypto.randomBytes(5).toString('hex').toUpperCase();
- const id=crypto.randomUUID();const expiresAt=Date.now()+30*60*1000;
- depositRequests.set(reference,{id,userId:user.id,amount,expiresAt,status:'pending'});
- const qrUrl='https://img.vietqr.io/image/'+encodeURIComponent(VIMO_BANK_ID)+'-'+encodeURIComponent(VIMO_BANK_ACCOUNT)+'-compact2.png?'+
-  new URLSearchParams({amount:String(amount),addInfo:reference,accountName:VIMO_BANK_NAME});
- res.json({id,reference,amount,qrUrl,expiresAt,status:'pending',
-  notice:'QR chỉ tạo yêu cầu chuyển khoản. Ví sẽ KHÔNG được cộng tiền cho đến khi ngân hàng/cổng thanh toán xác minh.'});
-});
-app.get('/api/wallet/vietqr-intent/:reference',(req,res)=>{
- const user=getSession(req);if(!user)return res.status(401).json({error:'Bạn cần đăng nhập'});
- const entry=depositRequests.get(String(req.params.reference));
- if(!entry||entry.userId!==user.id)return res.status(404).json({error:'Không tìm thấy yêu cầu nạp'});
- res.json({id:entry.id,reference:req.params.reference,amount:entry.amount,status:entry.status,expiresAt:entry.expiresAt});
-});
-
 app.get('/api/health',(_req,res)=>res.json({ok:true,rooms:rooms.size,online:[...rooms.values()].reduce((s,r)=>s+r.participants.size,0)}));
-app.get('/api/rooms',(_req,res)=>res.json([...rooms.values()].filter(r=>!r.password).map(r=>({id:r.id,name:r.name,online:r.participants.size,maxPeople:MAX_PEOPLE}))));
+app.get('/api/rooms',(_req,res)=>res.json([...rooms.values()].filter(r=>!r.password&&!r.isPrivate).map(r=>({id:r.id,name:r.name,category:r.category,online:r.participants.size,maxPeople:r.maxPeople}))));
+const roomCreateTimes=new Map();
 app.post('/api/rooms',(req,res)=>{
+ const ip=req.ip||'unknown';if(Date.now()-(roomCreateTimes.get(ip)||0)<2000)return res.status(429).json({error:'Hãy đợi ít nhất 2 giây trước khi tạo phòng khác.'});
+ if(rooms.size>=300)return res.status(503).json({error:'Đã đạt giới hạn 300 phòng thử nghiệm.'});
  const name=safeText(req.body?.name,50)||'Phòng của tôi';
  const password=safeText(req.body?.password,32);
+ const options=validateRoomOptions(req.body);if(options.error)return res.status(400).json({error:options.error});
  let id;do{id=roomCode();}while(rooms.has(id));
- rooms.set(id,newRoom(id,name,password));res.status(201).json({ok:true,id,name,hasPassword:!!password});
+ const room=newRoom(id,name,password,false,options);rooms.set(id,room);roomCreateTimes.set(ip,Date.now());res.status(201).json({ok:true,id,name,category:room.category,maxPeople:room.maxPeople,isPrivate:room.isPrivate,inviteToken:room.inviteToken,hasPassword:!!password});
 });
 // Upload an audio track and make it available to everyone in the room.
 // This demo stores files on disk temporarily; proxy/CDN and storage quotas are needed in production.
@@ -275,6 +315,64 @@ app.use('/api/photo-uploads',express.static(photoDir,{index:false,fallthrough:fa
 app.use('/api/uploads',express.static(uploadDir,{index:false,fallthrough:false,
  setHeaders:(res,path)=>{res.setHeader('Cache-Control','private, max-age=3600');res.setHeader('X-Content-Type-Options','nosniff');}
 }));
+app.post('/api/livekit/token',async(req,res)=>{
+ const {LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET}=process.env;
+ if(!LIVEKIT_URL||!LIVEKIT_API_KEY||!LIVEKIT_API_SECRET)return res.status(503).json({error:'LiveKit chưa được cấu hình trên server.'});
+ const {socketId,roomId}=req.body||{};
+ const s=io.sockets.sockets.get(socketId);
+ const r=rooms.get(roomId);
+ if(!s||!r||s.data.roomId!==roomId||!r.participants.has(socketId))return res.status(403).json({error:'Bạn chưa tham gia phòng.'});
+ const p=r.participants.get(socketId);
+ const token=new AccessToken(LIVEKIT_API_KEY,LIVEKIT_API_SECRET,{identity:socketId,name:p.name,ttl:'2h'});
+ token.addGrant({roomJoin:true,room:roomId,canPublish:r.category!=='musicbox'||r.karaokeSinger===socketId,canSubscribe:true});
+ res.json({token:await token.toJwt(),url:LIVEKIT_URL});
+});
+
+// One-time admission after verified payment. A charged photo can never enter twice.
+async function submitPhotoNow(socket,raw){
+ const r=inRoom(socket);
+ if(!r)return {ok:false,reason:'Chưa vào phòng'};
+ const duration=Number(raw?.duration),price=photoCost(duration);
+ if(price===null)return {ok:false,reason:`Thời lượng ảnh phải từ ${PHOTO_MIN_SECONDS} đến ${PHOTO_MAX_SECONDS} giây.`};
+ const id=String(raw?.photoId||''),pending=photos.get(id);
+ if(!pending||pending.submitted||pending.submitting||pending.ownerToken!==socket.data.walletToken||pending.roomId!==r.id)return {ok:false,reason:'Ảnh không hợp lệ hoặc đã sử dụng.'};
+ if(!existsSync(join(photoDir,pending.file)))return {ok:false,reason:'Ảnh đã hết hạn, vui lòng tải lại.'};
+ if(r.photoQueue.length+(r.photoReservations||0)>=MAX_PHOTO_QUEUE)return {ok:false,reason:'Hàng chờ ảnh đã đầy.'};
+ pending.submitting=true;r.photoReservations=(r.photoReservations||0)+1;
+ try{
+  let balance;
+  if(walletDb){
+   if(!socket.data.accountId)return {ok:false,reason:'Cần đăng nhập tài khoản để gửi ảnh khi dùng ví PostgreSQL.'};
+   const spent=await walletDb.spendForPhoto(socket.data.accountId,id,price,`Chiếu ảnh ${duration} giây · ${r.name}`);
+   if(!spent.ok)return {ok:false,insufficient:!!spent.insufficient,balance:spent.balance,shortfall:spent.shortfall,reason:spent.reason};
+   balance=spent.balance;
+  }else{
+   const w=walletOf(socket);
+   if(!w||w.balance<price)return {ok:false,insufficient:true,balance:w?.balance||0,shortfall:price-(w?.balance||0),reason:`Cần ${price.toLocaleString('vi-VN')} xu.`};
+   w.balance-=price;balance=w.balance;
+   w.ledger.push({id:crypto.randomUUID(),type:'photo_spend',amount:-price,at:Date.now(),description:`Chiếu ảnh ${duration} giây · ${r.name}`});
+   w.ledger=w.ledger.slice(-60);if(socket.data.accountId)savePaymentState();
+  }
+  pending.submitted=true;
+  const member=r.participants.get(socket.id);
+  const photo={id,url:`/api/photo-uploads/${pending.file}`,caption:safeText(raw?.caption,160),duration,cost:price,addedBy:member?.name||'Thành viên',createdAt:Date.now(),startedAt:null,endsAt:null};
+  if(r.photoActive)r.photoQueue.push(photo);
+  else{freezePlaybackForPhoto(r);r.photoActive=photo;photo.startedAt=Date.now();photo.endsAt=photo.startedAt+duration*1000;}
+  changes(r);await sendWallet(socket);emitSystem(r,`${photo.addedBy} đã gửi ảnh ưu tiên (${duration} giây).`);
+  return {ok:true,balance,photoId:id,cost:price};
+ }catch(error){console.error('photo submit transaction failed',error);return {ok:false,reason:'Giao dịch ảnh tạm thời thất bại.'};}
+ finally{pending.submitting=false;r.photoReservations--;}
+}
+async function resumePendingPhoto(userId){
+ const intent=pendingPhotoRequests.get(userId);if(!intent)return;
+ if(Date.now()-intent.createdAt>20*60*1000){pendingPhotoRequests.delete(userId);return;}
+ const socket=[...io.sockets.sockets.values()].find(s=>s.data.accountId===userId&&s.data.roomId===intent.roomId);
+ if(!socket)return; // Keep credited balance. User may submit the photo manually after reconnect.
+ const result=await submitPhotoNow(socket,intent);
+ if(result.ok){pendingPhotoRequests.delete(userId);socket.emit('photo_intent_status',{ok:true,photoId:intent.photoId,message:'Nạp sandbox được xác minh, ảnh đã vào hàng chiếu.'});}
+ else if(!result.insufficient){pendingPhotoRequests.delete(userId);socket.emit('photo_intent_status',{ok:false,message:result.reason||'Ảnh chưa thể hiển thị. Tiền vẫn còn trong ví.'});}
+}
+
 io.on('connection', socket => {
  socket.data.roomId=null;
  const loggedIn=getSession({headers:{cookie:socket.handshake.headers.cookie||''}});
@@ -282,32 +380,35 @@ io.on('connection', socket => {
  socket.on('join_room',(raw,ack)=>{
   const id=safeText(raw?.roomId,16).toUpperCase();const r=rooms.get(id);
   if(!r)return err(ack,'Phòng không tồn tại. Hãy tạo phòng mới.');
-  if(r.password && r.password!==String(raw?.password??''))return err(ack,'Mật khẩu phòng không đúng.');
-  if(r.participants.size>=MAX_PEOPLE)return err(ack,'Phòng đã đủ 100 người.');
+  if(!canJoinRoom(r,{password:String(raw?.password??''),invite:String(raw?.invite||'')}))return err(ack,'Link mời hoặc mật khẩu phòng không hợp lệ.');
+  if(r.participants.size>=r.maxPeople)return err(ack,`Phòng đã đủ ${r.maxPeople} người.`);
   if(inRoom(socket))release(socket);
   const used=new Set(participants(r).filter(p=>p.seat!==null).map(p=>p.seat));
-  let seat=Array.from({length:100},(_,i)=>i).find(i=>!used.has(i));seat??=null;
+  let seat=r.category==='cinema'?Array.from({length:r.maxPeople},(_,i)=>i).find(i=>!used.has(i)):null;seat??=null;
   const user=accounts.find(a=>a.id===socket.data.accountId);
-  const p={id:socket.id,name:user?.username||safeText(raw?.name,22)||'Khách xem phim',seat,action:'sit',dance:'bounce',zone:'seat',stageSlot:null,skin:'default',accountId:socket.data.accountId||null,color:Math.floor(Math.random()*6),hair:0,accessory:0,pants:0,joinedAt:Date.now()};
+  const p={id:socket.id,name:user?.username||safeText(raw?.name,22)||'Khách xem phim',seat,action:'sit',dance:'bounce',zone:'seat',color:Math.floor(Math.random()*6),hair:0,accessory:0,pants:0,joinedAt:Date.now()};
   socket.data.uploadToken=crypto.randomBytes(24).toString('hex');
   // Unpredictable bearer token persists between reloads for THIS DEMO ONLY.
   // Real money requires authenticated accounts and a transactional database.
   const requested=String(raw?.walletToken||'');
-  const walletToken=/^[a-f0-9]{64}$/.test(requested)&&wallets.has(requested)?requested:crypto.randomBytes(32).toString('hex');
-  if(!wallets.has(walletToken))wallets.set(walletToken,{balance:0,demoCredited:false,ledger:[],skins:[]});
+  const walletToken=socket.data.accountId ? `account:${socket.data.accountId}` : (/^[a-f0-9]{64}$/.test(requested)&&wallets.has(requested)?requested:crypto.randomBytes(32).toString('hex'));
+  if(socket.data.accountId && !walletDb)userWallet(socket.data.accountId);
+  else if(!wallets.has(walletToken))wallets.set(walletToken,{balance:0,demoCredited:false,ledger:[]});
   socket.data.walletToken=walletToken;
   r.participants.set(socket.id,p);socket.join(id);socket.data.roomId=id;
   if(!r.hostId)r.hostId=socket.id;
   success(ack,{room:snapshot(r),you:socket.id,uploadToken:socket.data.uploadToken,walletToken});
-  sendWallet(socket);
+  void sendWallet(socket);
+  if(socket.data.accountId)void resumePendingPhoto(socket.data.accountId);
   emitSystem(r,`${p.name} đã vào rạp`);changes(r);
  });
  socket.on('leave_room',()=>release(socket));
+ socket.on('room_invite',(_,ack)=>{const r=inRoom(socket);if(!r||r.hostId!==socket.id)return err(ack,'Chỉ chủ phòng được tạo link mời.');success(ack,{inviteToken:r.inviteToken,isPrivate:r.isPrivate});});
  socket.on('choose_seat',(seat,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
-  if(!Number.isInteger(seat)||seat<0||seat>=100)return err(ack,'Ghế không hợp lệ');
+  if(r.category!=='cinema'||!Number.isInteger(seat)||seat<0||seat>=r.maxPeople)return err(ack,'Ghế không hợp lệ');
   if(participants(r).some(p=>p.id!==socket.id&&p.seat===seat))return err(ack,'Ghế đã có người ngồi');
-  const p=r.participants.get(socket.id);p.seat=seat;p.action='sit';p.zone='seat';p.stageSlot=null;changes(r);success(ack);
+  const p=r.participants.get(socket.id);p.seat=seat;p.action='sit';p.zone='seat';changes(r);success(ack);
  });
  socket.on('avatar_action',(raw,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
@@ -316,11 +417,8 @@ io.on('connection', socket => {
   const p=r.participants.get(socket.id);
   const zone=action==='dance'?(raw?.zone||p.zone||'floor'):'seat';
   if(action==='dance'&&!['floor','stage'].includes(zone))return err(ack,'Vị trí nhảy không hợp lệ');
-  if(action==='dance'&&zone==='stage'){
-   const place=p.zone==='stage'&&p.stageSlot!==null?p.stageSlot:stageSlot(participants(r),socket.id);
-   if(place===null)return err(ack,'Sân khấu chỉ có 4 vị trí nhảy. Vui lòng đợi chỗ trống!');
-   p.stageSlot=place;
-  }else p.stageSlot=null;
+  if(zone==='stage' && ! (p.action==='dance'&&p.zone==='stage') && participants(r).filter(x=>x.id!==socket.id&&x.action==='dance'&&x.zone==='stage').length>=12)
+   return err(ack,'Sân khấu đã đủ 12 người đang nhảy. Chọn nhảy dưới sàn nhé!');
   p.action=action;p.zone=zone;
   if(['bounce','shuffle','spin'].includes(raw?.dance))p.dance=raw.dance;
   changes(r);success(ack);
@@ -336,54 +434,34 @@ io.on('connection', socket => {
   }
   changes(r);success(ack);
  });
- socket.on('skin_purchase',(raw,ack)=>{
-  const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
-  const skin=String(raw?.skin||'');
-  if(!(skin in SKIN_PRICES))return err(ack,'Skin không hợp lệ');
-  const w=walletOf(socket), p=r.participants.get(socket.id), cost=SKIN_PRICES[skin];
-  if(!w)return err(ack,'Không tìm thấy ví');
-  if(!Array.isArray(w.skins))w.skins=[];
-  if(!w.skins.includes(skin)){
-   if(w.balance<cost)return err(ack,'Ví chưa đủ xu cho skin này');
-   w.balance-=cost;w.skins.push(skin);
-   w.ledger.push({id:crypto.randomUUID(),type:'skin_spend',amount:-cost,at:Date.now(),description:'Mua skin '+skin});
-  }
-  p.skin=skin;changes(r);sendWallet(socket);success(ack,{skin,balance:w.balance});
- });
- socket.on('wallet_demo_topup',(_,ack)=>{
+ socket.on('wallet_demo_topup',async(_,ack)=>{
   if(!inRoom(socket))return err(ack,'Chưa vào phòng');
-  if(!demoWalletEnabled)return err(ack,'Chế độ ví thử đã tắt. Cần cổng thanh toán được xác minh để dùng ví thật.');
-  const w=walletOf(socket);if(!w)return err(ack,'Không tìm thấy ví');
-  if(w.demoCredited)return err(ack,'Ví này đã nhận tín dụng dùng thử.');
-  w.demoCredited=true;w.balance+=DEMO_WALLET_CREDIT;
-  w.ledger.push({id:crypto.randomUUID(),type:'demo_credit',amount:DEMO_WALLET_CREDIT,at:Date.now(),description:'Tín dụng dùng thử (không phải tiền thật)'});
-  sendWallet(socket);success(ack,{balance:w.balance});
+  if(!demoWalletEnabled)return err(ack,'Chỉ có tín dụng thử trong môi trường local.');
+  try{
+   if(walletDb && socket.data.accountId){
+    const result=await walletDb.creditDemoOnce(socket.data.accountId,DEMO_WALLET_CREDIT);
+    if(!result.ok)return err(ack,result.reason);
+    await sendWallet(socket);success(ack,{balance:result.balance});return;
+   }
+   const w=walletOf(socket);if(!w)return err(ack,'Không tìm thấy ví');
+   if(w.demoCredited)return err(ack,'Ví đã nhận tín dụng dùng thử.');
+   w.demoCredited=true;w.balance+=DEMO_WALLET_CREDIT;
+   w.ledger.push({id:crypto.randomUUID(),type:'demo_credit',amount:DEMO_WALLET_CREDIT,at:Date.now(),description:'Xu dùng thử (không phải tiền thật)'});
+   if(socket.data.accountId)savePaymentState();
+   await sendWallet(socket);success(ack,{balance:w.balance});
+  }catch(error){console.error('demo wallet failed',error);err(ack,'Không cấp được xu demo.');}
  });
- socket.on('photo_submit',(raw,ack)=>{
-  const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
+ socket.on('photo_submit',async(raw,ack)=>{
   if(Date.now()-(socket.data.photoSubmitAt||0)<2000)return err(ack,'Hãy đợi trước khi gửi ảnh tiếp.');
-  const duration=Number(raw?.duration);
-  const price=photoCost(duration);
-  if(price===null)return err(ack,'Thời lượng ảnh phải từ 6 đến 60 giây.');
-  const id=String(raw?.photoId||'');const pending=photos.get(id);
-  if(!pending||pending.submitted||pending.ownerToken!==socket.data.walletToken||pending.roomId!==r.id)
-   return err(ack,'Ảnh tải lên không hợp lệ, đã dùng hoặc không thuộc phòng này.');
-  if(!existsSync(join(photoDir,pending.file)))return err(ack,'Ảnh đã hết hạn. Hãy tải lại.');
-  if(r.photoQueue.length>=MAX_PHOTO_QUEUE)return err(ack,'Hàng chờ ảnh đã đầy.');
-  const w=walletOf(socket);if(!w||w.balance<price)return err(ack,`Ví không đủ. Cần ${price.toLocaleString('vi-VN')}đ.`);
-  const member=r.participants.get(socket.id);
-  // Single Node event loop: validation, deduction, and one-time submission are synchronous.
-  // For production replace this with one atomic SQL transaction.
-  pending.submitted=true;w.balance-=price;
-  const photo={id,url:`/api/photo-uploads/${pending.file}`,caption:safeText(raw?.caption,160),duration,cost:price,
-   addedBy:member.name,createdAt:Date.now(),startedAt:null,endsAt:null};
-  w.ledger.push({id:crypto.randomUUID(),type:'photo_spend',amount:-price,at:Date.now(),description:`Chiếu ảnh ${duration} giây · ${r.name}`});
-  w.ledger=w.ledger.slice(-60);
   socket.data.photoSubmitAt=Date.now();
-  if(r.photoActive)r.photoQueue.push(photo);else{r.photoActive=photo;photo.startedAt=Date.now();photo.endsAt=photo.startedAt+duration*1000;}
-  changes(r);sendWallet(socket);
-  emitSystem(r,`${member.name} đã gửi ảnh ưu tiên (${duration} giây).`);
-  success(ack,{balance:w.balance,photoId:id,cost:price});
+  const result=await submitPhotoNow(socket,raw);
+  if(result.ok){pendingPhotoRequests.delete(socket.data.accountId);return success(ack,result);}
+  if(result.insufficient&&raw?.deferIfInsufficient&&socket.data.accountId){
+   // Preserve the uploaded photo, price and room until signed webhook arrives.
+   pendingPhotoRequests.set(socket.data.accountId,{photoId:raw.photoId,duration:raw.duration,caption:raw.caption,roomId:socket.data.roomId,createdAt:Date.now()});
+   return typeof ack==='function'&&ack({ok:false,needsTopup:true,error:'Số dư chưa đủ. Hãy nạp thử qua modal hỗ trợ.',balance:result.balance,shortfall:result.shortfall});
+  }
+  err(ack,result.reason||'Không thể thêm ảnh vào hàng chiếu.');
  });
  socket.on('support_gift',(raw,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
@@ -408,12 +486,39 @@ io.on('connection', socket => {
   if(!['❤️','🔥','👏','🎉','😂','🕺'].includes(emoji))return;
   socket.data.reactAt=Date.now();io.to(r.id).emit('reaction',{id:crypto.randomUUID(),userId:socket.id,emoji,time:Date.now()});
  });
+ // WebRTC signaling is relayed only among members of the same Music Box.
+ socket.on('karaoke_signal',(raw)=>{
+  const r=inRoom(socket),target=String(raw?.to||'');
+  if(!r||r.category!=='musicbox'||!r.participants.has(target)||target===socket.id)return;
+  if(![socket.id,target].includes(r.karaokeSinger))return;
+  if(!['offer','answer','ice'].includes(raw?.type))return;
+  if(!raw.data||typeof raw.data!=='object')return;
+  const payload=JSON.stringify(raw.data);if(payload.length>12000)return;
+  io.to(target).emit('karaoke_signal',{from:socket.id,type:raw.type,data:raw.data});
+ });
+ socket.on('karaoke_enqueue',(_,ack)=>{
+  const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
+  if(r.category!=='musicbox')return err(ack,'Chỉ dùng trong Music Box');
+  if(r.karaokeQueue.includes(socket.id)||r.karaokeSinger===socket.id)return err(ack,'Bạn đã có trong hàng chờ hát');
+  r.karaokeQueue.push(socket.id);if(!r.karaokeSinger)r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());
+  void enforceKaraokeMic(r);changes(r);success(ack);
+ });
+ socket.on('karaoke_leave',(_,ack)=>{
+  const r=inRoom(socket);if(!r||r.category!=='musicbox')return err(ack,'Không thuộc Music Box');
+  r.karaokeQueue=r.karaokeQueue.filter(id=>id!==socket.id);if(r.karaokeSinger===socket.id)r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());
+  void enforceKaraokeMic(r);changes(r);success(ack);
+ });
+ socket.on('karaoke_next',(_,ack)=>{
+  const r=inRoom(socket);if(!r||r.category!=='musicbox')return err(ack,'Không thuộc Music Box');
+  if(r.hostId!==socket.id)return err(ack,'Chỉ chủ phòng chuyển lượt hát');
+  const current=r.karaokeSinger;r.karaokeQueue=r.karaokeQueue.filter(id=>id!==current);r.karaokeSinger=nextSinger(r.karaokeQueue,r.participants.keys());
+  void enforceKaraokeMic(r);changes(r);success(ack);
+ });
  socket.on('queue_add',(raw,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
   if(r.queue.length>=30)return err(ack,'Hàng chờ đã đầy');
-  const m=normalizeMedia(raw);if(!m)return err(ack,'Chỉ hỗ trợ YouTube hoặc link .mp4 / .webm / .m3u8 công khai.');
+  const m=normalizeMedia(raw);if(!m)return err(ack,'Hỗ trợ YouTube, SoundCloud hoặc file media hợp lệ.');
   const p=r.participants.get(socket.id);
-  if(r.queue.filter(x=>x.addedById===socket.id).length>=3)return err(ack,'Mỗi người chỉ được chờ tối đa 3 video');
   const entry={...m,id:crypto.randomUUID(),addedBy:p.name,addedById:socket.id,votes:0,voters:[],addedAt:Date.now()};r.queue.push(entry);changes(r);success(ack,{id:entry.id});
  });
  socket.on('queue_vote',(raw,ack)=>{
@@ -422,12 +527,11 @@ io.on('connection', socket => {
   const entry=r.queue.find(m=>m.id===raw?.id);if(!entry)return err(ack,'Video không còn trong hàng chờ');
   socket.data.queueVoteAt=Date.now();
   entry.voters=Array.isArray(entry.voters)?entry.voters:[];
-  const voter=socket.data.accountId||socket.id;
-  if(entry.voters.includes(voter))entry.voters=entry.voters.filter(id=>id!==voter);
-  else entry.voters.push(voter);
+  if(entry.voters.includes(socket.id))entry.voters=entry.voters.filter(id=>id!==socket.id);
+  else entry.voters.push(socket.id);
   entry.votes=entry.voters.length;
   // Sort by community votes; stable sorting keeps original order on ties.
-  r.queue.sort(queueOrder);
+  r.queue.sort((a,b)=>(b.votes||0)-(a.votes||0));
   changes(r);success(ack);
  });
  socket.on('queue_manage',(raw,ack)=>{
@@ -437,13 +541,19 @@ io.on('connection', socket => {
   if(command==='remove'){
    if(r.hostId!==socket.id && r.queue[index].addedById!==socket.id)return err(ack,'Bạn chỉ có thể xóa bài mình thêm');
    r.queue.splice(index,1);
-  }else return err(ack,'Thứ tự hàng chờ được tính tự động theo vote.');
+  }else if(command==='up'||command==='down'){
+   if(r.hostId!==socket.id)return err(ack,'Chỉ chủ phòng được sắp xếp hàng chờ');
+   const target=index+(command==='up'?-1:1);
+   if(target<0||target>=r.queue.length)return err(ack,'Không thể di chuyển thêm');
+   [r.queue[index],r.queue[target]]=[r.queue[target],r.queue[index]];
+  }else return err(ack,'Thao tác không hợp lệ');
   changes(r);success(ack);
  });
  socket.on('media_control',(raw,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
   if(r.hostId!==socket.id)return err(ack,'Chỉ chủ phòng được điều khiển nhạc / phim');
   const cmd=raw?.command;
+  if(r.photoActive && ['next','play','pause','seek','load'].includes(cmd))return err(ack,'Ảnh ưu tiên đang chiếu. Video sẽ tiếp tục khi kết thúc tất cả ảnh.');
   if(cmd==='next') nextMedia(r);
   else if(cmd==='play'||cmd==='pause') {r.media.position=elapsedMedia(r);r.media.playing=cmd==='play';r.media.updatedAt=Date.now();}
   else if(cmd==='seek') {const sec=Number(raw?.position);if(!Number.isFinite(sec)||sec<0||sec>86400)return err(ack,'Thời gian không hợp lệ');r.media.position=sec;r.media.updatedAt=Date.now();}
@@ -457,8 +567,8 @@ io.on('connection', socket => {
  });
  socket.on('vote_skip',(_,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
-  const voter=socket.data.accountId||socket.id;
-  if(r.votes.has(voter))r.votes.delete(voter);else r.votes.add(voter);const need=votesNeeded(r.participants.size);
+  if(r.photoActive)return err(ack,'Chờ hết lượt chiếu ảnh trước khi chuyển bài.');
+  if(r.votes.has(socket.id))r.votes.delete(socket.id);else r.votes.add(socket.id);const need=Math.max(2,Math.ceil(r.participants.size*.35));
   if(r.votes.size>=need){nextMedia(r);emitSystem(r,'Bỏ phiếu thành công! Đã chuyển bài.');}
   changes(r);success(ack);
  });
@@ -488,4 +598,4 @@ const dist=resolve('dist');
 if(process.env.SERVE_STATIC==='true' && existsSync(join(dist,'index.html'))) {
  app.use(express.static(dist));app.get('/{*splat}',(_req,res)=>res.sendFile(join(dist,'index.html')));
 }
-server.listen(port,()=>console.log(`🎬 VIMO CINÉ API: http://localhost:${port}`));
+server.listen(port,()=>console.log(`🎬 Wetube Disco API: http://localhost:${port}`));
