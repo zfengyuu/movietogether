@@ -16,7 +16,9 @@ import { photoCost, PHOTO_MAX_BYTES, DEMO_WALLET_CREDIT, freezePlaybackForPhoto,
 const app = express();
 const server = createServer(app);
 const port = Number(process.env.PORT || 3001);
-const origin = process.env.FRONTEND_ORIGIN || '*';
+const origin = process.env.FRONTEND_ORIGIN
+ ? process.env.FRONTEND_ORIGIN.split(',').map(x=>x.trim()).filter(Boolean)
+ : (process.env.NODE_ENV==='production' ? false : '*');
 const io = new Server(server, { cors: {origin, methods: ['GET','POST']}, maxHttpBufferSize: 30_000 });
 const walletDb=process.env.DATABASE_URL ? await openPgWallet(process.env.DATABASE_URL) : null;
 const paymentMode=process.env.PAYMENTS_MODE==='sandbox' && walletDb ? 'sandbox' : 'disabled';
@@ -165,7 +167,8 @@ const demoWalletEnabled = process.env.NODE_ENV !== 'production' && process.env.D
 const wallets = new Map(); // temporary demo credits only, never a real-money ledger
 const depositRequests=new Map(); // pending VietQR intents; no auto-credit without payment-provider verification
 const photos = new Map(); // temporary, validated files only
-const photoDir = resolve('photo-uploads');
+const storageRoot = process.env.UPLOAD_ROOT ? resolve(process.env.UPLOAD_ROOT) : resolve('.');
+const photoDir = join(storageRoot, 'photo-uploads');
 mkdirSync(photoDir, {recursive:true});
 const MAX_PHOTO_FILES = 100;
 const MAX_PHOTO_QUEUE = 15;
@@ -190,7 +193,7 @@ const publicPhoto = p => p ? ({id:p.id,url:p.url,caption:p.caption,addedBy:p.add
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOADS = 150;
 const UPLOAD_TTL = 24 * 60 * 60 * 1000; // local demo only; use object storage in production
-const uploadDir = resolve('uploads');
+const uploadDir = join(storageRoot, 'uploads');
 mkdirSync(uploadDir, {recursive:true});
 const uploadedAudio = new Map();
 const supportedAudio = new Set(['.mp3','.m4a','.wav','.ogg','.aac','.flac']);
