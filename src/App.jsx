@@ -2,6 +2,7 @@ import React, {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import { io } from 'socket.io-client';
 import { Armchair, AudioLines, Check, ChevronDown, Clapperboard, Clipboard, Crown, DoorOpen, Eye, Film, Heart, Info, LockKeyhole, LogIn, Maximize2, Menu, MessageCircle, Music2, Pause, Play, Plus, Send, Settings, Share2, Shirt, SkipForward, Smile, Sparkles, Theater, Ticket, Users, Video, Volume2, VolumeX, Vote, Waves, X } from 'lucide-react';
 import Theatre from './components/Theatre.jsx';
+import {photoCost,PHOTO_MIN_SECONDS,PHOTO_MAX_SECONDS,PHOTO_VND_PER_SECOND} from '../shared/photo.js';
 import AudioPlayer from './components/AudioPlayer.jsx';
 import {useBeat} from './components/useBeat.js';
 
@@ -19,7 +20,7 @@ function App(){
  const [joined,setJoined]=useState(false),[room,setRoom]=useState(null),[you,setYou]=useState('');
  const [name,setName]=useState(localStorage.getItem('disco-name')||''),[code,setCode]=useState(initialCode),[password,setPassword]=useState('');
  const [account,setAccount]=useState(null),[authMode,setAuthMode]=useState('login'),[authOpen,setAuthOpen]=useState(false),[authName,setAuthName]=useState(''),[authPassword,setAuthPassword]=useState(''),[authBusy,setAuthBusy]=useState(false);
- const [wallet,setWallet]=useState({balance:0,demoCredited:false,demoEnabled:false,ledger:[]}),[photoFile,setPhotoFile]=useState(null),[photoCaption,setPhotoCaption]=useState(''),[photoDuration,setPhotoDuration]=useState(10),[photoBusy,setPhotoBusy]=useState(false);
+ const [wallet,setWallet]=useState({balance:0,demoCredited:false,demoEnabled:false,ledger:[]}),[photoFile,setPhotoFile]=useState(null),[photoCaption,setPhotoCaption]=useState(''),[photoDuration,setPhotoDuration]=useState(10),[photoBusy,setPhotoBusy]=useState(false),[topupOpen,setTopupOpen]=useState(false),[pendingPhoto,setPendingPhoto]=useState(null),[topupAmount,setTopupAmount]=useState(20000),[topupOrder,setTopupOrder]=useState(null);
  const [newName,setNewName]=useState('Phòng party của tôi'),[newPassword,setNewPassword]=useState('');
  const [create,setCreate]=useState(false),[rooms,setRooms]=useState([]),[panel,setPanel]=useState(''),[notice,setNotice]=useState('');
  const [view,setView]=useState('front'),[volume,setVolume]=useState(.75),[audioEnabled,setAudioEnabled]=useState(false);
@@ -49,9 +50,10 @@ function App(){
   const onReaction=r=>{setReactions(v=>[...v,r]);setTimeout(()=>setReactions(v=>v.filter(x=>x.id!==r.id)),2600);};
   const onKicked=msg=>{joinRef.current=null;uploadToken.current=null;setJoined(false);setRoom(null);setYou('');setPanel('');toast(msg);};
   const onWallet=w=>setWallet(w);
+  const onPhotoIntent=status=>{setPendingPhoto(null);setTopupOpen(false);if(status.ok){setPhotoFile(null);setPhotoCaption('');}toast(status.message||'Trạng thái ảnh đã cập nhật.');};
   const onGift=g=>{setGiftFlash(g);setTimeout(()=>setGiftFlash(old=>old?.id===g.id?null:old),3800);};
-  socket.on('connect',onConnect);socket.on('disconnect',onDisconnect);socket.on('room_state',onRoom);socket.on('chat_message',onMessage);socket.on('media_sync',onMedia);socket.on('reaction',onReaction);socket.on('kicked',onKicked);socket.on('gift_received',onGift);socket.on('wallet_state',onWallet);
-  return ()=>{socket.off('connect',onConnect);socket.off('disconnect',onDisconnect);socket.off('room_state',onRoom);socket.off('chat_message',onMessage);socket.off('media_sync',onMedia);socket.off('reaction',onReaction);socket.off('kicked',onKicked);socket.off('gift_received',onGift);socket.off('wallet_state',onWallet);socket.disconnect();};
+  socket.on('connect',onConnect);socket.on('disconnect',onDisconnect);socket.on('room_state',onRoom);socket.on('chat_message',onMessage);socket.on('media_sync',onMedia);socket.on('reaction',onReaction);socket.on('kicked',onKicked);socket.on('gift_received',onGift);socket.on('wallet_state',onWallet);socket.on('photo_intent_status',onPhotoIntent);
+  return ()=>{socket.off('connect',onConnect);socket.off('disconnect',onDisconnect);socket.off('room_state',onRoom);socket.off('chat_message',onMessage);socket.off('media_sync',onMedia);socket.off('reaction',onReaction);socket.off('kicked',onKicked);socket.off('gift_received',onGift);socket.off('wallet_state',onWallet);socket.off('photo_intent_status',onPhotoIntent);socket.disconnect();};
  },[refreshRooms,toast]);
  useEffect(()=>{chatEnd.current?.scrollIntoView({block:'end',behavior:'smooth'});},[messages.length,panel]);
  useEffect(()=>{const t=setInterval(()=>setClock(n=>n+1),1000);return ()=>clearInterval(t);},[]);
@@ -124,15 +126,25 @@ function App(){
   try{const r=await fetch('/api/wallet/vietqr-intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:depositAmount})});const d=await r.json();if(!r.ok)throw Error(d.error||'Không tạo được mã QR');setDepositInfo(d);}
   catch(e){toast(e.message)}finally{setDepositBusy(false)}
  };
+ const createSandboxTopup=async()=>{
+  if(!account)return toast('Vui lòng đăng nhập username trước khi tạo lệnh nạp');
+  try {
+   const response=await fetch('/api/wallet/topup-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:topupAmount})});
+   const data=await response.json();if(!response.ok)throw Error(data.error||'Không tạo được lệnh nạp');
+   setTopupOrder(data.order);toast('Đã tạo lệnh nạp SANDBOX. Không chuyển khoản tiền thật!');
+  }catch(e){toast(e.message);}
+ };
  const submitPhoto=async()=>{
   if(!photoFile)return toast('Vui lòng chọn ảnh trước khi gửi');
+  if(!account&&wallet.balance<photoCost(photoDuration)){setAuthOpen(true);return toast('Đăng nhập username trước để có thể nạp tiền và tự gửi ảnh sau khi thanh toán.');}
   if(photoFile.size>12*1024*1024)return toast('Ảnh vượt quá 12 MB');
   setPhotoBusy(true);
   try{
    const result=await fetch('/api/upload-photo',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Socket-ID':you,'X-Upload-Token':uploadToken.current||''},body:photoFile});
    const data=await result.json();if(!result.ok)throw Error(data.error||'Không tải được ảnh');
-   socket.emit('photo_submit',{photoId:data.photoId,duration:photoDuration,caption:photoCaption},ack=>{
+   socket.emit('photo_submit',{photoId:data.photoId,duration:photoDuration,caption:photoCaption,deferIfInsufficient:true},ack=>{
     setPhotoBusy(false);
+    if(ack?.needsTopup){setPendingPhoto({photoId:data.photoId,duration:photoDuration,cost:photoCost(photoDuration)});setTopupAmount(Math.min(1000000,Math.max(10000,Math.ceil((ack.shortfall||10000)/1000)*1000)));setTopupOpen(true);return toast('Đã giữ ảnh chờ. Nạp đủ xu sandbox để tự đưa ảnh lên màn hình.');}
     if(!ack?.ok)return toast(ack?.error||'Không thể chiếu ảnh');
     setPhotoFile(null);setPhotoCaption('');setPanel('photo');toast('Ảnh đã vào hàng chiếu ưu tiên!');
    });
@@ -206,24 +218,34 @@ function App(){
       }):<div className="queue-empty"><Music2 size={30}/><strong>Danh sách chờ đang trống</strong><p>Hãy thêm một bài hát hoặc video YouTube đầu tiên!</p></div>}</div>
       <button className="queue-add-main" onClick={()=>setPanel('media')}><Plus size={20}/> Thêm video YouTube / bài hát</button>
     </>}
-    {panel==='photo'&&<div className="vimo-clean-form">
-      <p className="panel-hint">Chọn ảnh, lời nhắn và thời lượng. Ảnh sẽ xuất hiện trên màn hình trong lúc âm nhạc vẫn chạy.</p>
-      <div className="wallet-balance"><small>SỐ DƯ VÍ DEMO</small><strong>{(wallet.balance||0).toLocaleString('vi-VN')} xu</strong></div>
-      {wallet.demoEnabled&&!wallet.demoCredited&&<button className="panel-outline" onClick={()=>send('wallet_demo_topup',{},'Đã nhận xu demo')}>+ 200.000 xu dùng thử</button>}
-      <label>Ảnh của bạn</label><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>setPhotoFile(e.target.files?.[0]||null)}/>
-      {photoFile&&<div className="photo-file-name">🖼 {photoFile.name}</div>}
-      <label>Lời nhắn (tối đa 160 ký tự)</label><textarea value={photoCaption} maxLength={160} onChange={e=>setPhotoCaption(e.target.value)} rows={2} placeholder="Cùng nhau tạo nên một khoảnh khắc đẹp..."/>
-      <label>Thời lượng chiếu: <b>{photoDuration} giây</b></label><input type="range" min={6} max={60} value={photoDuration} onChange={e=>setPhotoDuration(Number(e.target.value))}/>
-      <div className="photo-cost"><span>Phí chiếu ảnh</span><strong>{(photoDuration<10?10000:photoDuration*2000).toLocaleString('vi-VN')} xu</strong></div>
-      <button className="panel-main" disabled={photoBusy||!photoFile||wallet.balance<(photoDuration<10?10000:photoDuration*2000)} onClick={submitPhoto}>{photoBusy?'Đang gửi...':'Chiếu ảnh ưu tiên'}</button>
-      <small>Đây là xu demo, không phải tiền thật. Ảnh được xóa khi hết thời hạn lưu.</small>
-      <details className="vimo-details"><summary>Ảnh đang chiếu và hàng chờ ({room.photoQueue?.length||0})</summary>
-        {room.photoActive&&<div className="photo-queue-item"><img src={room.photoActive.url} alt="Ảnh đang chiếu"/>Đang chiếu · {room.photoActive.addedBy}</div>}
-        {(room.photoQueue||[]).map(p=><div className="photo-queue-item" key={p.id}><img src={p.url} alt="Ảnh chờ"/>{p.addedBy} · {p.duration}s</div>)}
-      </details>
-    </div>}
+    {panel==='photo'&&<>
+      <p className="panel-hint">Chiếu ảnh và lời nhắn lên màn hình của cả rạp. Video sẽ tạm dừng đúng vị trí, sau khi hết lượt ảnh sẽ tự phát tiếp. Mức giá đề xuất <strong>1.000đ/giây</strong>. <strong>Hiện chỉ thử bằng xu demo, chưa thu tiền thật.</strong></p>
+      <div className="wallet-balance"><small>SỐ DƯ VÍ KIỂM THỬ (KHÔNG PHẢI TIỀN THẬT)</small><strong>{(wallet.balance||0).toLocaleString('vi-VN')} xu</strong><span>Ví gắn với UUID tài khoản khi đăng nhập; chưa kết nối nạp tiền thật.</span></div>
+      {account&&<div className="panel-hint">Ví tài khoản <b>{account.username}</b> · ID {account.id.slice(0,8)}… · {wallet.accountLinked?'Đã liên kết':'Đang kết nối'}</div>}
+      {wallet.demoEnabled&&!wallet.demoCredited&&<button className="panel-outline" onClick={()=>send('wallet_demo_topup',{},'Đã nhận tín dụng demo')}>+ Nhận 200.000 xu dùng thử (một lần)</button>}
+      <h4>Kiểm thử nạp VietQR / SePay</h4>
+      <p className="panel-hint">Chỉ SANDBOX: không có mã QR chuyển khoản thật. Chỉ webhook có chữ ký hợp lệ mới được cộng vào ví UUID của tài khoản. Mỗi giao dịch được nhận một lần.</p>
+      <select value={topupAmount} onChange={e=>setTopupAmount(Number(e.target.value))}>{[10000,20000,50000,100000,200000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>)}</select>
+      <button className="panel-outline" onClick={createSandboxTopup} disabled={!account}>Tạo lệnh nạp SANDBOX (không chuyển tiền)</button>
+      {topupOrder&&<p className="panel-hint">Mã đơn: <b>{topupOrder.code}</b> · {topupOrder.amount.toLocaleString('vi-VN')}đ · Chờ webhook ký số xác nhận.</p>}
+      <label>Chọn ảnh JPG / PNG / WebP / GIF tối đa 12 MB</label>
+      <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>setPhotoFile(e.target.files?.[0]||null)}/>
+      {photoFile&&<div className="photo-file-name">📸 {photoFile.name}</div>}
+      <label>Lời nhắn hiển thị (tối đa 160 ký tự)</label>
+      <textarea value={photoCaption} maxLength={160} onChange={e=>setPhotoCaption(e.target.value)} placeholder="Chúc mọi người xem phim vui vẻ!" rows={3}/>
+      <label>Thời gian chiếu: {photoDuration} giây · {PHOTO_VND_PER_SECOND.toLocaleString('vi-VN')}đ / giây</label><input type="range" min={PHOTO_MIN_SECONDS} max={PHOTO_MAX_SECONDS} value={photoDuration} onChange={e=>setPhotoDuration(Number(e.target.value))}/>
+      <div className="photo-cost"><span>Giá quy đổi:</span><strong>{photoCost(photoDuration).toLocaleString('vi-VN')}đ</strong></div>
+      <p className="panel-hint">Thao tác thử trừ {photoCost(photoDuration).toLocaleString('vi-VN')} xu. Production cần tích hợp xác minh giao dịch và sổ cái SQL.</p>
+      <button className="panel-main" disabled={photoBusy||!photoFile||!!pendingPhoto} onClick={submitPhoto}>{photoBusy?'Đang gửi ảnh...':pendingPhoto?'⏳ Ảnh đang chờ xác minh nạp tiền':wallet.balance<photoCost(photoDuration)?'💗 Gửi ảnh và mở modal ủng hộ':'✨ Chiếu ảnh ưu tiên'}</button>
+      {pendingPhoto&&<p className="panel-hint">Ảnh đã được giữ để tự gửi lên màn hình khi webhook SANDBOX xác minh nạp đủ. Nếu bạn rời phòng/khởi động lại server, số dư vẫn còn nhưng có thể cần tải ảnh lại.</p>}
+      <button className="panel-outline" onClick={()=>setTopupOpen(true)}>💗 Mở modal ủng hộ / nạp xu sandbox</button>
+      <p className="panel-hint">Ảnh được lưu tạm và xoá định kỳ. Đăng nhập không tạo ví tiền thật; khi triển khai thanh toán cần webhook xác minh và database giao dịch.</p>
+      <h4>Hàng chiếu ảnh ({room.photoQueue?.length||0})</h4>
+      {room.photoActive?<div className="photo-queue-item"><img src={room.photoActive.url} alt="Ảnh đang chiếu"/><div><strong>Đang chiếu · {room.photoActive.addedBy}</strong><small>{room.photoActive.duration} giây</small></div></div>:<p className="panel-hint">Chưa có ảnh nào đang chiếu.</p>}
+      {(room.photoQueue||[]).map(p=><div className="photo-queue-item" key={p.id}><img src={p.url} alt="Ảnh chờ"/><div><strong>{p.addedBy}</strong><small>{p.duration} giây · Đang chờ</small></div></div>)}
+    </>}
     {panel==='support'&&<><div className="support-hero"><span>💖</span><h4>Ủng hộ rạp disco</h4><p>Gửi quà ảo để cổ vũ mọi người cùng nhảy. Đây là quà miễn phí trong bản demo, <b>không phải thanh toán tiền thật</b>.</p><div className="gift-total">{room.supportCount||0} lượt tặng quà trong phòng</div></div><div className="gift-grid">{[['heart','❤️','Thả tim'],['star','⭐','Ngôi sao'],['flower','🌹','Hoa hồng'],['confetti','🎉','Pháo giấy']].map(([gift,emoji,label])=><button key={gift} onClick={()=>send('support_gift',{gift})}><span>{emoji}</span><b>{label}</b></button>)}</div><h4>Quà vừa nhận</h4>{(room.gifts||[]).length===0?<p className="panel-hint">Chưa có ai gửi quà, hãy là người đầu tiên!</p>:[...(room.gifts||[])].reverse().map(g=><div key={g.id} className="gift-entry"><span>{({heart:'❤️',star:'⭐',flower:'🌹',confetti:'🎉'})[g.gift]}</span><strong>{g.name}</strong><small>{new Date(g.time).toLocaleTimeString('vi-VN')}</small></div>)}</>}
-    {panel==='support'&&<div className="vimo-wallet-deposit"><h4>💳 VietQR — Ủng hộ chủ rạp</h4><p className="panel-hint">QR là hướng dẫn chuyển khoản, không phải bằng chứng đã thanh toán. Ví chỉ cộng khi ngân hàng xác minh trên backend; chưa bật chuyển tiền thật.</p>{!qrConfigured?<p className="vimo-notice">Chủ rạp chưa cấu hình tài khoản VietQR.</p>:<><select value={depositAmount} onChange={e=>{setDepositAmount(Number(e.target.value));setDepositInfo(null)}}>{[10000,20000,30000,50000,100000,200000].map(n=><option value={n} key={n}>{n.toLocaleString('vi-VN')}đ</option>)}</select><button className="panel-main" disabled={depositBusy} onClick={createDeposit}>Tạo mã VietQR</button>{depositInfo&&<div className="vimo-deposit-card"><img src={depositInfo.qrUrl} alt="VietQR của chủ rạp"/><strong>{depositInfo.amount.toLocaleString('vi-VN')}đ</strong><small>{depositInfo.reference}</small><b>Đang chờ xác minh • Chưa cộng tiền</b></div>}</>}</div>}
+    {panel==='support'&&<button className="panel-main" onClick={()=>setTopupOpen(true)}>💗 Mở ví / nạp xu SANDBOX</button>}
     {panel==='chat'&&<><div className="chat-log">{messages.map(m=><div key={m.id} className={'message '+(m.system?'system':'')}>
      {m.system?<span>✦ {m.text}</span>:<><div className="msg-author">{m.name}{m.userId===you?' (Bạn)':''} <small>{new Date(m.time).toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'})}</small></div><div>{m.text}</div></>}
     </div>)}<div ref={chatEnd}/></div><div className="reaction-row">{emojiList.map(e=><button key={e} onClick={()=>send('reaction',e)}>{e}</button>)}</div></>}
@@ -235,6 +257,17 @@ function App(){
    </div>
   </div>}
   {!joined&&panel&&<div className="generic-modal" onClick={()=>setPanel('')}><div className="simple-dialog" onClick={e=>e.stopPropagation()}><button className="dialog-close" onClick={()=>setPanel('')}><X/></button><h3>VIMO CINÉ</h3><p>Đăng nhập vào rạp để sử dụng tính năng này. Tạo phòng hoặc chọn phòng công khai!</p></div></div>}
+  {topupOpen&&<div className="auth-backdrop" onClick={()=>setTopupOpen(false)}><div className="auth-dialog topup-dialog" role="dialog" aria-modal="true" aria-label="Ủng hộ rạp qua ví sandbox" onClick={e=>e.stopPropagation()}>
+    <button className="auth-close" onClick={()=>setTopupOpen(false)}><X size={20}/></button><div className="auth-logo">♥</div>
+    <h2>Ủng hộ rạp · Nạp ví thử</h2><p>Ví hiện có <b>{(wallet.balance||0).toLocaleString('vi-VN')} xu</b>. {pendingPhoto?`Ảnh ${pendingPhoto.duration} giây cần ${pendingPhoto.cost.toLocaleString('vi-VN')} xu.`:'Bạn có thể nạp xu thử để kiểm tra webhook.'}</p>
+    <p><strong>Sandbox — KHÔNG chuyển khoản tiền thật.</strong> Tiền chỉ được cộng sau khi backend nhận webhook SePay HMAC hợp lệ. Một giao dịch chỉ ghi nhận một lần.</p>
+    {!account?<><p>Vui lòng đăng nhập tài khoản để nạp ví.</p><button className="auth-primary" onClick={()=>{setTopupOpen(false);setAuthOpen(true)}}>Đăng nhập / Đăng ký</button></>:<>
+      <label>Số tiền thử (đơn vị VND mô phỏng)</label><select value={topupAmount} onChange={e=>setTopupAmount(Number(e.target.value))}>{[10000,20000,50000,100000,200000,500000,1000000].includes(topupAmount)?[10000,20000,50000,100000,200000,500000,1000000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>):[topupAmount,10000,20000,50000,100000,200000,500000,1000000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>)}</select>
+      <button className="auth-primary" onClick={createSandboxTopup}>Tạo lệnh nạp sandbox</button>
+      {topupOrder&&<div className="topup-order"><b>Đang chờ webhook có chữ ký</b><span>Mã: {topupOrder.code}</span><span>Số tiền: {topupOrder.amount.toLocaleString('vi-VN')}đ</span><small>Trạng thái: pending. Sau khi xác minh, hệ thống tự xử lý ảnh nếu phòng và tệp còn hiệu lực.</small></div>}
+      {wallet.demoEnabled&&!wallet.demoCredited&&<button className="panel-outline" onClick={()=>send('wallet_demo_topup',{},'Đã nhận xu demo')}>Nhận 200.000 xu demo (một lần)</button>}
+    </>}
+   </div></div>}
   {authOpen&&<div className="auth-backdrop" onClick={()=>setAuthOpen(false)}><div className="auth-dialog" role="dialog" aria-modal="true" aria-label="Tài khoản VIMO CINÉ" onClick={e=>e.stopPropagation()}>
     <button className="auth-close" onClick={()=>setAuthOpen(false)}><X size={20}/></button>
     <div className="auth-logo">V</div><h2>{account?'Tài khoản của bạn':authMode==='login'?'Chào mừng trở lại':'Tạo tài khoản mới'}</h2>
