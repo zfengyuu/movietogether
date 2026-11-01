@@ -114,3 +114,31 @@
 .vimo-photo-plane{position:relative!important;inset:auto!important;width:1280px;height:720px;box-shadow:none;pointer-events:none}
 .vimo-photo-plane img{width:100%;height:100%;object-fit:contain}
 .brand-main b{color:#e5a2ff}.logo{background:linear-gradient(135deg,#ff70aa,#825aff)}
+
+/* VIMO CINÉ V5 · minimal cinema controls, compact modals and 4-person stage */
+.vimo-three-youtube .youtube-outside-actions{position:absolute;bottom:-52px;left:50%;transform:translateX(-50%);pointer-events:auto;display:flex;justify-content:center}
+.vimo-three-youtube .youtube-outside-actions:empty{display:none}
+.vimo-three-youtube .youtube-outside-actions button{background:rgba(27,20,48,.9);border:1px solid #ba90e9;border-radius:12px;color:#eee3ff;padding:8px 14px;font-size:14px}
+.vimo-three-youtube .yt-native-player,.vimo-three-youtube iframe{pointer-events:none!important}
+.vimo-3d-video-anchor{pointer-events:none!important}
+.vimo-stage-spot{font-size:16px;letter-spacing:2px;font-weight:800;padding:5px 12px;background:#1c183ecc;border:1px solid #b78eff;color:#efe7ff;border-radius:20px;white-space:nowrap;box-shadow:0 0 16px #a77cff55}
+.avatar-label{white-space:nowrap;max-width:130px;text-overflow:ellipsis;overflow:hidden;background:rgba(15,13,33,.88);border:1px solid rgba(210,166,255,.65);border-radius:13px;color:#f3eaff;padding:4px 10px;box-shadow:0 4px 18px #140a3699;font-size:12px;font-weight:750}
+.avatar-label.avatar-me{border-color:#f4cd79;color:#ffefa0;background:rgba(49,27,55,.94)}
+.vimo-emoji-panel{position:absolute;left:50%;transform:translateX(-50%);bottom:122px;width:min(440px,92vw);padding:14px;border-radius:20px;background:rgba(25,19,43,.97);backdrop-filter:blur(24px);border:1px solid #8f6dc0;box-shadow:0 18px 55px #03020dc9;z-index:110}
+.emoji-heading{display:flex;justify-content:space-between;align-items:center;padding:6px 6px 14px;color:#faf0ff}.emoji-heading button{color:#fff;background:transparent;border:0;cursor:pointer}
+.vimo-emojis{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}.vimo-emojis button{font-size:25px;padding:8px 3px;border-radius:10px;border:1px solid transparent;background:transparent;cursor:pointer}.vimo-emojis button:hover{background:#564074;border-color:#ac87e0}
+.panel:has(.vimo-clean-form){width:min(460px,calc(100vw - 34px));max-height:min(86vh,780px);border:1px solid #665082;border-radius:22px;box-shadow:0 24px 90px #06020fb9;background:linear-gradient(140deg,#21172fef,#131426f5)}
+.vimo-clean-form{display:flex;flex-direction:column;gap:12px;padding:0 3px}.vimo-clean-form label{font-size:13px;font-weight:700;color:#d8cdea;margin-top:5px}.vimo-clean-form input:not([type=range]),.vimo-clean-form textarea,.vimo-clean-form select,.vimo-wallet-deposit select{width:100%;background:#151427;border:1px solid #52476f;border-radius:12px;color:#fff;min-height:44px;padding:12px 13px;outline:none}
+.vimo-clean-form input:focus,.vimo-clean-form textarea:focus{border-color:#d98cf3;box-shadow:0 0 0 2px #a77bea20}
+.vimo-clean-form small{color:#aca1c3;font-size:11px;line-height:1.6}.vimo-clean-form .panel-main{min-height:48px;background:linear-gradient(110deg,#f38ba8,#976eff);border:0;color:#150f24;font-weight:800}
+.vimo-details{padding:12px;border:1px solid #554566;background:#1d182dbd;border-radius:13px;font-size:13px;color:#c6b6d3}.vimo-details summary{cursor:pointer;font-weight:700;margin-bottom:8px}.vimo-details input{margin:8px 0;max-width:100%}
+.vimo-skin-market{border:1px solid #6c508a;background:#241832dd;border-radius:17px;padding:16px;margin-bottom:16px}
+.vimo-skin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.vimo-skin-card{border:1px solid #55456d;background:#17162d;color:#efe7ff;padding:14px 8px;border-radius:13px;display:flex;align-items:center;flex-direction:column;gap:7px;cursor:pointer}.vimo-skin-card.on{border-color:#ffd68a;box-shadow:0 0 15px #dcaafa30}.vimo-skin-card small{color:#c4b7d7}
+.skin-swatch{display:flex;width:55px;height:55px;border-radius:16px;align-items:center;justify-content:center;font-size:32px;color:white;box-shadow:inset 0 0 12px #fff3}
+.skin-mint{background:linear-gradient(145deg,#8ee9cd,#298f94)}.skin-peach{background:linear-gradient(145deg,#fabbac,#ec748a)}.skin-midnight{background:linear-gradient(145deg,#7a8de2,#313b8d)}.skin-royal{background:linear-gradient(145deg,#e1afff,#9852d3)}
+.vimo-wallet-deposit{border:1px solid #5b5571;background:#201b2d;border-radius:16px;padding:16px;margin-top:20px;display:flex;flex-direction:column;gap:10px}
+.vimo-wallet-deposit h4{margin:2px 0 4px}.vimo-notice{font-size:12px;padding:12px;background:#30253e;border-radius:10px;color:#f4c6d7}
+.vimo-deposit-card{display:flex;align-items:center;gap:6px;flex-direction:column;background:#fff;color:#282133;padding:12px;border-radius:14px}
+.vimo-deposit-card img{max-width:260px;width:90%;object-fit:contain}.vimo-deposit-card b{color:#9f2d47}.vimo-deposit-card small{overflow-wrap:anywhere}.vimo-deposit-card strong{font-size:18px}
+.panel .queue-item-card{border-bottom:1px solid #352a45}.panel .queue-vote.voted{background:#533476;color:#fff;border-color:#e49eff}
+@media(max-width:700px){.vimo-emoji-panel{bottom:160px}.vimo-skin-grid{grid-template-columns:repeat(2,1fr)}.panel:has(.vimo-clean-form){width:calc(100vw - 20px)}}

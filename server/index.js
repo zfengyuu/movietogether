@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, renameSync } from 'node:fs';
 import { join, resolve, extname } from 'node:path';
 import crypto from 'node:crypto';
-import { AccessToken } from 'livekit-server-sdk';
+import { MAX_STAGE_DANCERS, SKIN_PRICES, votesNeeded, stageSlot, queueOrder } from '../shared/room-rules.js';
 import { photoCost, PHOTO_MAX_BYTES, DEMO_WALLET_CREDIT } from '../shared/photo.js';
 
 const app = express();
@@ -82,7 +82,8 @@ app.post('/api/auth/logout',(req,res)=>{sessions.delete(parseCookie(req));res.se
 const MAX_PEOPLE = 100;
 // Local demo credits only; NEVER deposit real money based on a button click.
 const demoWalletEnabled = process.env.NODE_ENV !== 'production' && process.env.DEMO_WALLET_ENABLED !== 'false';
-const wallets = new Map(); // bearer token -> {balance, demoCredited, ledger}; RAM only
+const wallets = new Map(); // temporary demo credits only, never a real-money ledger
+const depositRequests=new Map(); // pending VietQR intents; no auto-credit without payment-provider verification
 const photos = new Map(); // temporary, validated files only
 const photoDir = resolve('photo-uploads');
 mkdirSync(photoDir, {recursive:true});
@@ -100,7 +101,7 @@ const detectImage = buffer => {
 const walletOf = socket => wallets.get(socket.data.walletToken);
 const sendWallet = socket => {
  const w=walletOf(socket);
- socket.emit('wallet_state', {balance:w?.balance||0, demoEnabled:demoWalletEnabled, demoCredited:!!w?.demoCredited, ledger:w?.ledger.slice(-12).reverse()||[], realPaymentsEnabled:false});
+ socket.emit('wallet_state', {balance:w?.balance||0, demoEnabled:demoWalletEnabled, demoCredited:!!w?.demoCredited, ledger:w?.ledger.slice(-12).reverse()||[], ownedSkins:w?.skins||[],realPaymentsEnabled:false});
 };
 const publicPhoto = p => p ? ({id:p.id,url:p.url,caption:p.caption,addedBy:p.addedBy,duration:p.duration,cost:p.cost,startedAt:p.startedAt,endsAt:p.endsAt}) : null;
 
@@ -125,7 +126,7 @@ const looksLikeAudio = (buf, ext) => {
 const rooms = new Map();
 const safeText = (v, n=60) => String(v ?? '').replace(/[\u0000-\u001F\u007F<>]/g,'').trim().slice(0,n);
 const roomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase();
-const sample = {type:'demo', url:'', title:'DISCO NIGHT • 128 BPM', duration:240};
+const sample = {type:'demo', url:'', title:'VIMO CINÉ • DISCO NIGHT', duration:240};
 const newRoom = (id, name, password='', permanent=false) => ({
  id, name, password, permanent, createdAt:Date.now(), hostId:null, participants:new Map(), messages:[], queue:[], votes:new Set(),
  media:{...sample, playing:false, position:0, updatedAt:Date.now()}, photoActive:null, photoQueue:[], disco:true, bpm:128, stageTheme:'neon', supportCount:0, gifts:[],
@@ -135,7 +136,7 @@ const elapsedMedia = r => Math.max(0, r.media.position + (r.media.playing ? (Dat
 const mediaSnapshot = r => ({...r.media, position:elapsedMedia(r), updatedAt:Date.now()});
 const participants = r => [...r.participants.values()];
 const snapshot = r => ({ id:r.id, name:r.name, hasPassword:!!r.password, hostId:r.hostId, participants:participants(r),
- messages:r.messages.slice(-70), queue:r.queue, votes:r.votes.size, votedIds:[...r.votes], skipNeeded:Math.max(2,Math.ceil(r.participants.size*.35)), media:mediaSnapshot(r),photoActive:publicPhoto(r.photoActive),photoQueue:r.photoQueue.map(publicPhoto),disco:r.disco,bpm:r.bpm,stageTheme:r.stageTheme,supportCount:r.supportCount,gifts:r.gifts.slice(-20),maxPeople:MAX_PEOPLE });
+ messages:r.messages.slice(-70), queue:r.queue, votes:r.votes.size, votedIds:[...r.votes], skipNeeded:votesNeeded(r.participants.size), media:mediaSnapshot(r),photoActive:publicPhoto(r.photoActive),photoQueue:r.photoQueue.map(publicPhoto),disco:r.disco,bpm:r.bpm,stageTheme:r.stageTheme,supportCount:r.supportCount,gifts:r.gifts.slice(-20),maxPeople:MAX_PEOPLE });
 const emitRoom = r => io.to(r.id).emit('room_state',snapshot(r));
 const err = (ack,message) => typeof ack==='function' && ack({ok:false,error:message});
 const success = (ack,info={})=>typeof ack==='function'&&ack({ok:true,...info});
@@ -144,7 +145,10 @@ const emitSystem = (r,txt) => { const msg={id:crypto.randomUUID(),system:true,te
 const release = socket => {
  const r=inRoom(socket); if(!r) return;
  const p=r.participants.get(socket.id);if(!p)return;
- r.participants.delete(socket.id);r.votes.delete(socket.id);socket.leave(r.id);socket.data.roomId=null;socket.data.uploadToken=null;
+ r.participants.delete(socket.id);
+ const voterKey=socket.data.accountId||socket.id;
+ if(!socket.data.accountId || !participants(r).some(other=>other.accountId===socket.data.accountId))r.votes.delete(voterKey);
+ for(const item of r.queue){if(!socket.data.accountId&&item.voters?.includes(socket.id)){item.voters=item.voters.filter(id=>id!==socket.id);item.votes=item.voters.length;}}r.queue.sort(queueOrder);socket.leave(r.id);socket.data.roomId=null;socket.data.uploadToken=null;
  if(r.hostId===socket.id) r.hostId=participants(r)[0]?.id||null;
  emitSystem(r, `${p.name} đã rời phòng`);
  emitRoom(r);
@@ -169,7 +173,7 @@ const normalizeMedia = (raw) => {
  if(!['.mp4','.webm','.m3u8'].includes(extension))return null;
  return {type:'file',url:u.href,title,duration:0};
 };
-const nextMedia = r => {r.media = {...(r.queue.shift()||sample),position:0,playing:true,updatedAt:Date.now()};r.votes.clear();};
+const nextMedia = r => {r.queue.sort(queueOrder);r.media = {...(r.queue.shift()||sample),position:0,playing:true,updatedAt:Date.now()};r.votes.clear();};
 const changes = r => {emitRoom(r);};
 const advancePhoto = r => {
  r.photoActive = r.photoQueue.shift() || null;
@@ -179,6 +183,36 @@ const advancePhoto = r => {
  }
  emitRoom(r);
 };
+
+
+// VietQR generates transfer instructions, not proof of payment. Only authenticated
+// users can request a unique reference. No client action may credit a wallet.
+app.get('/api/wallet/vietqr-config',(_req,res)=>{
+ const configured=!!(process.env.VIMO_BANK_ID&&process.env.VIMO_BANK_ACCOUNT&&process.env.VIMO_BANK_NAME);
+ res.json({configured,verifiedPaymentsEnabled:false});
+});
+app.post('/api/wallet/vietqr-intent',(req,res)=>{
+ const user=getSession(req);
+ if(!user)return res.status(401).json({error:'Đăng nhập để tạo mã nạp ví.'});
+ const {VIMO_BANK_ID,VIMO_BANK_ACCOUNT,VIMO_BANK_NAME}=process.env;
+ if(!VIMO_BANK_ID||!VIMO_BANK_ACCOUNT||!VIMO_BANK_NAME)return res.status(503).json({error:'Chủ rạp chưa cấu hình VietQR.'});
+ const amount=Number(req.body?.amount);
+ if(!Number.isInteger(amount)||amount<10000||amount>1000000||amount%10000!==0)
+  return res.status(400).json({error:'Chọn số tiền từ 10.000đ đến 1.000.000đ theo bước 10.000đ.'});
+ const reference='VIMO'+crypto.randomBytes(5).toString('hex').toUpperCase();
+ const id=crypto.randomUUID();const expiresAt=Date.now()+30*60*1000;
+ depositRequests.set(reference,{id,userId:user.id,amount,expiresAt,status:'pending'});
+ const qrUrl='https://img.vietqr.io/image/'+encodeURIComponent(VIMO_BANK_ID)+'-'+encodeURIComponent(VIMO_BANK_ACCOUNT)+'-compact2.png?'+
+  new URLSearchParams({amount:String(amount),addInfo:reference,accountName:VIMO_BANK_NAME});
+ res.json({id,reference,amount,qrUrl,expiresAt,status:'pending',
+  notice:'QR chỉ tạo yêu cầu chuyển khoản. Ví sẽ KHÔNG được cộng tiền cho đến khi ngân hàng/cổng thanh toán xác minh.'});
+});
+app.get('/api/wallet/vietqr-intent/:reference',(req,res)=>{
+ const user=getSession(req);if(!user)return res.status(401).json({error:'Bạn cần đăng nhập'});
+ const entry=depositRequests.get(String(req.params.reference));
+ if(!entry||entry.userId!==user.id)return res.status(404).json({error:'Không tìm thấy yêu cầu nạp'});
+ res.json({id:entry.id,reference:req.params.reference,amount:entry.amount,status:entry.status,expiresAt:entry.expiresAt});
+});
 
 app.get('/api/health',(_req,res)=>res.json({ok:true,rooms:rooms.size,online:[...rooms.values()].reduce((s,r)=>s+r.participants.size,0)}));
 app.get('/api/rooms',(_req,res)=>res.json([...rooms.values()].filter(r=>!r.password).map(r=>({id:r.id,name:r.name,online:r.participants.size,maxPeople:MAX_PEOPLE}))));
@@ -241,19 +275,6 @@ app.use('/api/photo-uploads',express.static(photoDir,{index:false,fallthrough:fa
 app.use('/api/uploads',express.static(uploadDir,{index:false,fallthrough:false,
  setHeaders:(res,path)=>{res.setHeader('Cache-Control','private, max-age=3600');res.setHeader('X-Content-Type-Options','nosniff');}
 }));
-app.post('/api/livekit/token',async(req,res)=>{
- const {LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET}=process.env;
- if(!LIVEKIT_URL||!LIVEKIT_API_KEY||!LIVEKIT_API_SECRET)return res.status(503).json({error:'LiveKit chưa được cấu hình trên server.'});
- const {socketId,roomId}=req.body||{};
- const s=io.sockets.sockets.get(socketId);
- const r=rooms.get(roomId);
- if(!s||!r||s.data.roomId!==roomId||!r.participants.has(socketId))return res.status(403).json({error:'Bạn chưa tham gia phòng.'});
- const p=r.participants.get(socketId);
- const token=new AccessToken(LIVEKIT_API_KEY,LIVEKIT_API_SECRET,{identity:socketId,name:p.name,ttl:'2h'});
- token.addGrant({roomJoin:true,room:roomId,canPublish:true,canSubscribe:true});
- res.json({token:await token.toJwt(),url:LIVEKIT_URL});
-});
-
 io.on('connection', socket => {
  socket.data.roomId=null;
  const loggedIn=getSession({headers:{cookie:socket.handshake.headers.cookie||''}});
@@ -267,13 +288,13 @@ io.on('connection', socket => {
   const used=new Set(participants(r).filter(p=>p.seat!==null).map(p=>p.seat));
   let seat=Array.from({length:100},(_,i)=>i).find(i=>!used.has(i));seat??=null;
   const user=accounts.find(a=>a.id===socket.data.accountId);
-  const p={id:socket.id,name:user?.username||safeText(raw?.name,22)||'Khách xem phim',seat,action:'sit',dance:'bounce',zone:'seat',color:Math.floor(Math.random()*6),hair:0,accessory:0,pants:0,joinedAt:Date.now()};
+  const p={id:socket.id,name:user?.username||safeText(raw?.name,22)||'Khách xem phim',seat,action:'sit',dance:'bounce',zone:'seat',stageSlot:null,skin:'default',accountId:socket.data.accountId||null,color:Math.floor(Math.random()*6),hair:0,accessory:0,pants:0,joinedAt:Date.now()};
   socket.data.uploadToken=crypto.randomBytes(24).toString('hex');
   // Unpredictable bearer token persists between reloads for THIS DEMO ONLY.
   // Real money requires authenticated accounts and a transactional database.
   const requested=String(raw?.walletToken||'');
   const walletToken=/^[a-f0-9]{64}$/.test(requested)&&wallets.has(requested)?requested:crypto.randomBytes(32).toString('hex');
-  if(!wallets.has(walletToken))wallets.set(walletToken,{balance:0,demoCredited:false,ledger:[]});
+  if(!wallets.has(walletToken))wallets.set(walletToken,{balance:0,demoCredited:false,ledger:[],skins:[]});
   socket.data.walletToken=walletToken;
   r.participants.set(socket.id,p);socket.join(id);socket.data.roomId=id;
   if(!r.hostId)r.hostId=socket.id;
@@ -286,7 +307,7 @@ io.on('connection', socket => {
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
   if(!Number.isInteger(seat)||seat<0||seat>=100)return err(ack,'Ghế không hợp lệ');
   if(participants(r).some(p=>p.id!==socket.id&&p.seat===seat))return err(ack,'Ghế đã có người ngồi');
-  const p=r.participants.get(socket.id);p.seat=seat;p.action='sit';p.zone='seat';changes(r);success(ack);
+  const p=r.participants.get(socket.id);p.seat=seat;p.action='sit';p.zone='seat';p.stageSlot=null;changes(r);success(ack);
  });
  socket.on('avatar_action',(raw,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
@@ -295,8 +316,11 @@ io.on('connection', socket => {
   const p=r.participants.get(socket.id);
   const zone=action==='dance'?(raw?.zone||p.zone||'floor'):'seat';
   if(action==='dance'&&!['floor','stage'].includes(zone))return err(ack,'Vị trí nhảy không hợp lệ');
-  if(zone==='stage' && ! (p.action==='dance'&&p.zone==='stage') && participants(r).filter(x=>x.id!==socket.id&&x.action==='dance'&&x.zone==='stage').length>=12)
-   return err(ack,'Sân khấu đã đủ 12 người đang nhảy. Chọn nhảy dưới sàn nhé!');
+  if(action==='dance'&&zone==='stage'){
+   const place=p.zone==='stage'&&p.stageSlot!==null?p.stageSlot:stageSlot(participants(r),socket.id);
+   if(place===null)return err(ack,'Sân khấu chỉ có 4 vị trí nhảy. Vui lòng đợi chỗ trống!');
+   p.stageSlot=place;
+  }else p.stageSlot=null;
   p.action=action;p.zone=zone;
   if(['bounce','shuffle','spin'].includes(raw?.dance))p.dance=raw.dance;
   changes(r);success(ack);
@@ -311,6 +335,20 @@ io.on('connection', socket => {
    if(raw[key]!==undefined){if(!Number.isInteger(raw[key])||raw[key]<0||raw[key]>max)return err(ack,'Trang phục không hợp lệ');p[key]=raw[key];}
   }
   changes(r);success(ack);
+ });
+ socket.on('skin_purchase',(raw,ack)=>{
+  const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
+  const skin=String(raw?.skin||'');
+  if(!(skin in SKIN_PRICES))return err(ack,'Skin không hợp lệ');
+  const w=walletOf(socket), p=r.participants.get(socket.id), cost=SKIN_PRICES[skin];
+  if(!w)return err(ack,'Không tìm thấy ví');
+  if(!Array.isArray(w.skins))w.skins=[];
+  if(!w.skins.includes(skin)){
+   if(w.balance<cost)return err(ack,'Ví chưa đủ xu cho skin này');
+   w.balance-=cost;w.skins.push(skin);
+   w.ledger.push({id:crypto.randomUUID(),type:'skin_spend',amount:-cost,at:Date.now(),description:'Mua skin '+skin});
+  }
+  p.skin=skin;changes(r);sendWallet(socket);success(ack,{skin,balance:w.balance});
  });
  socket.on('wallet_demo_topup',(_,ack)=>{
   if(!inRoom(socket))return err(ack,'Chưa vào phòng');
@@ -375,6 +413,7 @@ io.on('connection', socket => {
   if(r.queue.length>=30)return err(ack,'Hàng chờ đã đầy');
   const m=normalizeMedia(raw);if(!m)return err(ack,'Chỉ hỗ trợ YouTube hoặc link .mp4 / .webm / .m3u8 công khai.');
   const p=r.participants.get(socket.id);
+  if(r.queue.filter(x=>x.addedById===socket.id).length>=3)return err(ack,'Mỗi người chỉ được chờ tối đa 3 video');
   const entry={...m,id:crypto.randomUUID(),addedBy:p.name,addedById:socket.id,votes:0,voters:[],addedAt:Date.now()};r.queue.push(entry);changes(r);success(ack,{id:entry.id});
  });
  socket.on('queue_vote',(raw,ack)=>{
@@ -383,11 +422,12 @@ io.on('connection', socket => {
   const entry=r.queue.find(m=>m.id===raw?.id);if(!entry)return err(ack,'Video không còn trong hàng chờ');
   socket.data.queueVoteAt=Date.now();
   entry.voters=Array.isArray(entry.voters)?entry.voters:[];
-  if(entry.voters.includes(socket.id))entry.voters=entry.voters.filter(id=>id!==socket.id);
-  else entry.voters.push(socket.id);
+  const voter=socket.data.accountId||socket.id;
+  if(entry.voters.includes(voter))entry.voters=entry.voters.filter(id=>id!==voter);
+  else entry.voters.push(voter);
   entry.votes=entry.voters.length;
   // Sort by community votes; stable sorting keeps original order on ties.
-  r.queue.sort((a,b)=>(b.votes||0)-(a.votes||0));
+  r.queue.sort(queueOrder);
   changes(r);success(ack);
  });
  socket.on('queue_manage',(raw,ack)=>{
@@ -397,12 +437,7 @@ io.on('connection', socket => {
   if(command==='remove'){
    if(r.hostId!==socket.id && r.queue[index].addedById!==socket.id)return err(ack,'Bạn chỉ có thể xóa bài mình thêm');
    r.queue.splice(index,1);
-  }else if(command==='up'||command==='down'){
-   if(r.hostId!==socket.id)return err(ack,'Chỉ chủ phòng được sắp xếp hàng chờ');
-   const target=index+(command==='up'?-1:1);
-   if(target<0||target>=r.queue.length)return err(ack,'Không thể di chuyển thêm');
-   [r.queue[index],r.queue[target]]=[r.queue[target],r.queue[index]];
-  }else return err(ack,'Thao tác không hợp lệ');
+  }else return err(ack,'Thứ tự hàng chờ được tính tự động theo vote.');
   changes(r);success(ack);
  });
  socket.on('media_control',(raw,ack)=>{
@@ -422,7 +457,8 @@ io.on('connection', socket => {
  });
  socket.on('vote_skip',(_,ack)=>{
   const r=inRoom(socket);if(!r)return err(ack,'Chưa vào phòng');
-  if(r.votes.has(socket.id))r.votes.delete(socket.id);else r.votes.add(socket.id);const need=Math.max(2,Math.ceil(r.participants.size*.35));
+  const voter=socket.data.accountId||socket.id;
+  if(r.votes.has(voter))r.votes.delete(voter);else r.votes.add(voter);const need=votesNeeded(r.participants.size);
   if(r.votes.size>=need){nextMedia(r);emitSystem(r,'Bỏ phiếu thành công! Đã chuyển bài.');}
   changes(r);success(ack);
  });
@@ -452,4 +488,4 @@ const dist=resolve('dist');
 if(process.env.SERVE_STATIC==='true' && existsSync(join(dist,'index.html'))) {
  app.use(express.static(dist));app.get('/{*splat}',(_req,res)=>res.sendFile(join(dist,'index.html')));
 }
-server.listen(port,()=>console.log(`🎬 Wetube Disco API: http://localhost:${port}`));
+server.listen(port,()=>console.log(`🎬 VIMO CINÉ API: http://localhost:${port}`));
