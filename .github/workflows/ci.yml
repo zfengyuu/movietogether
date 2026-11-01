@@ -1,4 +1,4 @@
-name: VIMO CINÉ checks
+name: HộiRoom checks
 on:
   push:
     branches: [main]
@@ -13,6 +13,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
+      # Historical lockfile predates the pg dependency; npm install syncs it until the lock is regenerated.
+      - run: npm install --no-audit --no-fund
       - run: npm test
       - run: npm run build
