@@ -115,30 +115,30 @@
 .vimo-photo-plane img{width:100%;height:100%;object-fit:contain}
 .brand-main b{color:#e5a2ff}.logo{background:linear-gradient(135deg,#ff70aa,#825aff)}
 
-/* VIMO CINÉ V5 · minimal cinema controls, compact modals and 4-person stage */
-.vimo-three-youtube .youtube-outside-actions{position:absolute;bottom:-52px;left:50%;transform:translateX(-50%);pointer-events:auto;display:flex;justify-content:center}
-.vimo-three-youtube .youtube-outside-actions:empty{display:none}
-.vimo-three-youtube .youtube-outside-actions button{background:rgba(27,20,48,.9);border:1px solid #ba90e9;border-radius:12px;color:#eee3ff;padding:8px 14px;font-size:14px}
-.vimo-three-youtube .yt-native-player,.vimo-three-youtube iframe{pointer-events:none!important}
-.vimo-3d-video-anchor{pointer-events:none!important}
-.vimo-stage-spot{font-size:16px;letter-spacing:2px;font-weight:800;padding:5px 12px;background:#1c183ecc;border:1px solid #b78eff;color:#efe7ff;border-radius:20px;white-space:nowrap;box-shadow:0 0 16px #a77cff55}
-.avatar-label{white-space:nowrap;max-width:130px;text-overflow:ellipsis;overflow:hidden;background:rgba(15,13,33,.88);border:1px solid rgba(210,166,255,.65);border-radius:13px;color:#f3eaff;padding:4px 10px;box-shadow:0 4px 18px #140a3699;font-size:12px;font-weight:750}
-.avatar-label.avatar-me{border-color:#f4cd79;color:#ffefa0;background:rgba(49,27,55,.94)}
-.vimo-emoji-panel{position:absolute;left:50%;transform:translateX(-50%);bottom:122px;width:min(440px,92vw);padding:14px;border-radius:20px;background:rgba(25,19,43,.97);backdrop-filter:blur(24px);border:1px solid #8f6dc0;box-shadow:0 18px 55px #03020dc9;z-index:110}
-.emoji-heading{display:flex;justify-content:space-between;align-items:center;padding:6px 6px 14px;color:#faf0ff}.emoji-heading button{color:#fff;background:transparent;border:0;cursor:pointer}
-.vimo-emojis{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}.vimo-emojis button{font-size:25px;padding:8px 3px;border-radius:10px;border:1px solid transparent;background:transparent;cursor:pointer}.vimo-emojis button:hover{background:#564074;border-color:#ac87e0}
-.panel:has(.vimo-clean-form){width:min(460px,calc(100vw - 34px));max-height:min(86vh,780px);border:1px solid #665082;border-radius:22px;box-shadow:0 24px 90px #06020fb9;background:linear-gradient(140deg,#21172fef,#131426f5)}
-.vimo-clean-form{display:flex;flex-direction:column;gap:12px;padding:0 3px}.vimo-clean-form label{font-size:13px;font-weight:700;color:#d8cdea;margin-top:5px}.vimo-clean-form input:not([type=range]),.vimo-clean-form textarea,.vimo-clean-form select,.vimo-wallet-deposit select{width:100%;background:#151427;border:1px solid #52476f;border-radius:12px;color:#fff;min-height:44px;padding:12px 13px;outline:none}
-.vimo-clean-form input:focus,.vimo-clean-form textarea:focus{border-color:#d98cf3;box-shadow:0 0 0 2px #a77bea20}
-.vimo-clean-form small{color:#aca1c3;font-size:11px;line-height:1.6}.vimo-clean-form .panel-main{min-height:48px;background:linear-gradient(110deg,#f38ba8,#976eff);border:0;color:#150f24;font-weight:800}
-.vimo-details{padding:12px;border:1px solid #554566;background:#1d182dbd;border-radius:13px;font-size:13px;color:#c6b6d3}.vimo-details summary{cursor:pointer;font-weight:700;margin-bottom:8px}.vimo-details input{margin:8px 0;max-width:100%}
-.vimo-skin-market{border:1px solid #6c508a;background:#241832dd;border-radius:17px;padding:16px;margin-bottom:16px}
-.vimo-skin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.vimo-skin-card{border:1px solid #55456d;background:#17162d;color:#efe7ff;padding:14px 8px;border-radius:13px;display:flex;align-items:center;flex-direction:column;gap:7px;cursor:pointer}.vimo-skin-card.on{border-color:#ffd68a;box-shadow:0 0 15px #dcaafa30}.vimo-skin-card small{color:#c4b7d7}
-.skin-swatch{display:flex;width:55px;height:55px;border-radius:16px;align-items:center;justify-content:center;font-size:32px;color:white;box-shadow:inset 0 0 12px #fff3}
-.skin-mint{background:linear-gradient(145deg,#8ee9cd,#298f94)}.skin-peach{background:linear-gradient(145deg,#fabbac,#ec748a)}.skin-midnight{background:linear-gradient(145deg,#7a8de2,#313b8d)}.skin-royal{background:linear-gradient(145deg,#e1afff,#9852d3)}
-.vimo-wallet-deposit{border:1px solid #5b5571;background:#201b2d;border-radius:16px;padding:16px;margin-top:20px;display:flex;flex-direction:column;gap:10px}
-.vimo-wallet-deposit h4{margin:2px 0 4px}.vimo-notice{font-size:12px;padding:12px;background:#30253e;border-radius:10px;color:#f4c6d7}
-.vimo-deposit-card{display:flex;align-items:center;gap:6px;flex-direction:column;background:#fff;color:#282133;padding:12px;border-radius:14px}
-.vimo-deposit-card img{max-width:260px;width:90%;object-fit:contain}.vimo-deposit-card b{color:#9f2d47}.vimo-deposit-card small{overflow-wrap:anywhere}.vimo-deposit-card strong{font-size:18px}
-.panel .queue-item-card{border-bottom:1px solid #352a45}.panel .queue-vote.voted{background:#533476;color:#fff;border-color:#e49eff}
-@media(max-width:700px){.vimo-emoji-panel{bottom:160px}.vimo-skin-grid{grid-template-columns:repeat(2,1fr)}.panel:has(.vimo-clean-form){width:calc(100vw - 20px)}}
+/* Priority photo top-up modal — no live QR until payment onboarding */
+.topup-dialog select{width:100%;border:1px solid #9880c381;background:#171329;color:#fff;padding:12px;border-radius:12px;margin:8px 0 0}
+.topup-order{margin-top:16px;padding:13px;display:flex;flex-direction:column;gap:7px;background:#302448;border:1px solid #8e78ba;border-radius:12px;font-size:12px;overflow-wrap:anywhere}
+.topup-order small{color:#c9b3dd;line-height:1.5}
+.topup-dialog .panel-outline{margin-top:16px;width:100%}
+
+/* HộiRoom multi-category spaces */
+.room-categories{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:10px 0}
+.room-categories b{background:#242035;border:1px solid #695583;color:#e9dafb;border-radius:10px;padding:8px;font-size:12px}
+.check-line{display:flex!important;align-items:center;gap:8px}.check-line input{width:auto!important}
+.room3d-label{font:bold 22px system-ui;background:#160e2ad9;border:1px solid #a36afa;color:#efbaff;padding:7px 18px;border-radius:12px;white-space:nowrap}
+.soundcloud-screen{width:1280px;height:720px;background:#080a20;border:6px solid #883fde;border-radius:20px;overflow:hidden;pointer-events:auto}
+.soundcloud-screen iframe{border:0;display:block}
+/* HộiRoom multi-room creator and karaoke */
+.room-create-form{display:grid;gap:10px}.room-create-form label{font-size:12px;opacity:.9}
+.room-type-picker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.room-type-picker button{border:1px solid #55546a;border-radius:12px;padding:12px 4px;background:#222235;color:#eee;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
+.room-type-picker button.active{border-color:#b896ff;background:#3c2856;box-shadow:0 0 0 1px #9874f2 inset}
+.room-type-picker button span{font-size:23px}.room-type-picker button strong{font-size:12px}.room-type-picker button small{font-size:10px;color:#c2b7d6;text-align:center}
+.room-private-toggle{display:flex;align-items:center;gap:9px;padding:10px 0;cursor:pointer}.room-private-toggle input{width:18px;height:18px;accent-color:#a378fc}
+.room-private-note{font-size:12px;line-height:1.4;color:#c5b5e7}
+.room-category-pill{display:inline-flex;align-items:center;gap:5px;background:#362448a6;border:1px solid #785ca6;border-radius:20px;padding:4px 9px;font-size:11px;color:#eadcff;margin:7px 0}
+.karaoke-room-controls{display:grid;gap:10px}.karaoke-singer{padding:12px;background:#29253d;border:1px solid #655588;border-radius:12px}
+.karaoke-queue{padding:10px;background:#171827;border-radius:10px;display:grid;gap:5px}.karaoke-queue span{font-size:12px}
+.karaoke-mic-note{font-size:12px;color:#c9b9d8;line-height:1.55}
+.soundcloud-player iframe{border:0;width:1200px;height:450px;display:block;background:#141222}
+.room3d-label{color:#fff;text-shadow:0 0 18px #f08cf2;font-weight:900;font-size:36px;letter-spacing:5px;white-space:nowrap}

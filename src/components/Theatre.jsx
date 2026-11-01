@@ -4,52 +4,36 @@ import { Html, OrbitControls, RoundedBox, Text, Environment } from '@react-three
 import * as THREE from 'three';
 import Hls from 'hls.js';
 import YouTubePlayer from './YouTubePlayer.jsx';
+import SoundCloudPlayer from './SoundCloudPlayer.jsx';
 
 const colors=['#c1a0fb','#f4a4c9','#87c8ff','#eab4f5','#f4cb96','#88d7d8'];
 const seatXY = i => ({x:(i%10-4.5)*1.75, y:0.35+Math.floor(i/10)*.105, z:-2.4+Math.floor(i/10)*1.2});
 const pantsColors=['#27333e','#3b3347','#253b38','#644f47','#dfd2bd'];
 const danceXY = (p, all) => {
  const stage = p.zone === 'stage';
- const dancers=all.filter(x=>x.action==='dance'&&x.zone===p.zone);
+ const dancers=all.filter(x=>x.action==='dance' && (x.zone==='stage')===stage);
  const i=Math.max(0,dancers.findIndex(x=>x.id===p.id));
- return stage?{x:[-4.5,-1.5,1.5,4.5][p.stageSlot??0],y:.72,z:-6.45}:{x:(i%8-3.5)*1.27,y:.34,z:-4.38+Math.floor(i/8)*.84};
+ if(!stage && i>=16)return seatXY(p.seat ?? 0);
+ return stage
+  ? {x:(i%6-2.5)*1.78,y:.72,z:-6.55+Math.floor(i/6)*.92}
+  : {x:(i%8-3.5)*1.27,y:.34,z:-4.38+Math.floor(i/8)*.84};
 };
 function Box({position,args,color,emissive,emissiveIntensity=0,metalness=0,roughness=.72, ...p}){
  return <mesh position={position} {...p}><boxGeometry args={args}/><meshStandardMaterial color={color} emissive={emissive||'#000'} emissiveIntensity={emissiveIntensity} metalness={metalness} roughness={roughness}/></mesh>;
 }
 function Avatar({p,others,isMe,onClick,lastMessage,bpm=128}){
- const root=useRef(), pivot=useRef(), armL=useRef(), armR=useRef(),head=useRef(),route=useRef([]),routeKey=useRef('');
+ const root=useRef(), pivot=useRef(), armL=useRef(), armR=useRef(),head=useRef();
  const seat=p.seat===null?seatXY(0):seatXY(p.seat);
  const target=p.action==='dance'?danceXY(p,others):seat;
- const skinPalette={mint:'#82e5c9',peach:'#ffb5a5',midnight:'#5a76c5',royal:'#d4a3ff'};
- const col=skinPalette[p.skin]||colors[(p.color||0)%colors.length];
- const skinHair={peach:1,midnight:2,royal:3};
- const hair=skinHair[p.skin]??p.hair;
- const skinAccessory=p.skin==='royal'?3:p.skin==='midnight'?2:p.accessory;
+ const col=colors[(p.color||0)%colors.length];
  useFrame(({clock},delta)=>{
   if(!root.current||!pivot.current)return;
   const t=clock.getElapsedTime();
-
-  const key=[p.zone,p.action,p.seat,p.stageSlot].join(':');
-  if(routeKey.current!==key){
-   routeKey.current=key;
-   const current=root.current.position;
-   const dest=target;
-   if(p.action==='dance'&&p.zone==='stage'){
-    const aisle=current.x>=0?9.1:-9.1;
-    route.current=[{x:aisle,y:.45,z:current.z},{x:aisle,y:.45,z:-4.72},{x:dest.x,y:.45,z:-4.72},{...dest}];
-   }else if(current.z<-5.2&&p.zone==='seat'){
-    const aisle=dest.x>=0?9.1:-9.1;
-    route.current=[{x:current.x,y:.45,z:-4.72},{x:aisle,y:.45,z:-4.72},{x:aisle,y:.45,z:dest.z},{...dest}];
-   }else route.current=[{...dest}];
-  }
-  const node=route.current[0]||target;
-  const dx=node.x-root.current.position.x, dz=node.z-root.current.position.z;
-  const dist=Math.hypot(dx,dz);
-  const step=Math.min(dist,delta*3.3);
-  if(dist>.02){root.current.position.x+=dx/dist*step;root.current.position.z+=dz/dist*step;}
-  else if(route.current.length)route.current.shift();
-  root.current.position.y+=(node.y-root.current.position.y)*Math.min(1,delta*5);
+  const tx=target.x+(p.action==='dance'&&p.dance==='shuffle'?Math.sin(t*bpm/60*Math.PI*2)*.16:0),tz=target.z,ty=target.y;
+  const k=Math.min(1,delta*3.5);
+  root.current.position.x+=(tx-root.current.position.x)*k;
+  root.current.position.y+=(ty-root.current.position.y)*k;
+  root.current.position.z+=(tz-root.current.position.z)*k;
   const dancing=p.action==='dance', active=dancing||p.action==='wave'||p.action==='cheer';
   const beat=t*(bpm/60)*Math.PI*2;
   pivot.current.position.y=p.action==='sit'?-0.17:active?Math.abs(Math.sin(beat))*.13:0;
@@ -61,48 +45,34 @@ function Avatar({p,others,isMe,onClick,lastMessage,bpm=128}){
  });
  return <group ref={root} position={[seat.x,seat.y,seat.z]} onClick={e=>{e.stopPropagation();onClick?.(p)}}>
    <group ref={pivot}>
-
-    <mesh position={[0,.61,0]} castShadow><capsuleGeometry args={[.24,.32,8,14]}/><meshStandardMaterial color={col} roughness={.88}/></mesh>
-    <Box args={[.21,.045,.11]} position={[0,.80,.20]} color={p.skin==='royal'?'#ffdc8a':'#f7edff'}/>
-    <Box args={[.28,.06,.045]} position={[0,.52,.225]} color={p.skin==='midnight'?'#a7baff':'#f0d9f7'}/>
-    <group ref={head} position={[0,1.02,0]}><mesh castShadow><sphereGeometry args={[.255,22,20]}/><meshStandardMaterial color="#e9b99a"/></mesh>
-     {hair===0&&<mesh position={[0,.13,-.085]}><sphereGeometry args={[.22,12,8,0,Math.PI*2,0,Math.PI/2]}/><meshStandardMaterial color="#342a27"/></mesh>}
-     {hair===1&&<mesh position={[0,.16,-.055]}><sphereGeometry args={[.23,12,8,0,Math.PI*2,0,Math.PI/2]}/><meshStandardMaterial color="#e3a9c2"/></mesh>}
-     {hair===2&&<><mesh position={[0,.20,0]}><sphereGeometry args={[.24,12,8,0,Math.PI*2,0,Math.PI/2]}/><meshStandardMaterial color="#83c9e5"/></mesh><mesh position={[0,.15,.20]}><boxGeometry args={[.32,.04,.14]}/><meshStandardMaterial color="#83c9e5"/></mesh></>}
-     {hair===3&&<mesh position={[0,.21,-.09]}><coneGeometry args={[.24,.37,9]}/><meshStandardMaterial color="#5a437e"/></mesh>}
-     {skinAccessory===1&&<><Box position={[0,.025,.235]} args={[.30,.09,.045]} color="#202631"/><Box position={[0,.03,.25]} args={[.30,.022,.02]} color="#bdcfd9"/></>}
-     {skinAccessory===2&&<><mesh position={[-.23,.02,0]}><sphereGeometry args={[.10,8,8]}/><meshStandardMaterial color="#b0ecaa"/></mesh><mesh position={[.23,.02,0]}><sphereGeometry args={[.10,8,8]}/><meshStandardMaterial color="#b0ecaa"/></mesh></>}
-     {skinAccessory===3&&<mesh position={[0,.36,0]}><coneGeometry args={[.19,.17,7]}/><meshStandardMaterial color="#efdc86" metalness={.65}/></mesh>}
+    <mesh position={[0, .60, 0]} castShadow><capsuleGeometry args={[.2,.33,4,8]}/><meshStandardMaterial color={col}/></mesh>
+    <group ref={head} position={[0,1.02,0]}><mesh castShadow><sphereGeometry args={[.245,12,10]}/><meshStandardMaterial color="#e9b99a"/></mesh>
+     {p.hair===0&&<mesh position={[0,.13,-.085]}><sphereGeometry args={[.22,12,8,0,Math.PI*2,0,Math.PI/2]}/><meshStandardMaterial color="#342a27"/></mesh>}
+     {p.hair===1&&<mesh position={[0,.16,-.055]}><sphereGeometry args={[.23,12,8,0,Math.PI*2,0,Math.PI/2]}/><meshStandardMaterial color="#e3a9c2"/></mesh>}
+     {p.hair===2&&<><mesh position={[0,.20,0]}><sphereGeometry args={[.24,12,8,0,Math.PI*2,0,Math.PI/2]}/><meshStandardMaterial color="#83c9e5"/></mesh><mesh position={[0,.15,.20]}><boxGeometry args={[.32,.04,.14]}/><meshStandardMaterial color="#83c9e5"/></mesh></>}
+     {p.hair===3&&<mesh position={[0,.21,-.09]}><coneGeometry args={[.24,.37,9]}/><meshStandardMaterial color="#5a437e"/></mesh>}
+     {p.accessory===1&&<><Box position={[0,.025,.235]} args={[.30,.09,.045]} color="#202631"/><Box position={[0,.03,.25]} args={[.30,.022,.02]} color="#bdcfd9"/></>}
+     {p.accessory===2&&<><mesh position={[-.23,.02,0]}><sphereGeometry args={[.10,8,8]}/><meshStandardMaterial color="#b0ecaa"/></mesh><mesh position={[.23,.02,0]}><sphereGeometry args={[.10,8,8]}/><meshStandardMaterial color="#b0ecaa"/></mesh></>}
+     {p.accessory===3&&<mesh position={[0,.36,0]}><coneGeometry args={[.19,.17,7]}/><meshStandardMaterial color="#efdc86" metalness={.65}/></mesh>}
      <mesh position={[-.075,.015,.224]}><sphereGeometry args={[.015,6,4]}/><meshBasicMaterial color="#1c1d22"/></mesh>
-     <mesh position={[.075,.015,.224]}><sphereGeometry args={[.015,6,4]}/><meshBasicMaterial color="#1c1d22"/></mesh><mesh position={[0,-.068,.246]}><torusGeometry args={[.027,.006,4,12,Math.PI]}/><meshBasicMaterial color="#8e5d5b"/></mesh>
+     <mesh position={[.075,.015,.224]}><sphereGeometry args={[.015,6,4]}/><meshBasicMaterial color="#1c1d22"/></mesh>
     </group>
     <group ref={armL} position={[-.23,.78,0]}><mesh position={[-.055,-.22,0]} rotation={[0,0,-.12]}><capsuleGeometry args={[.066,.30,4,6]}/><meshStandardMaterial color={col}/></mesh></group>
     <group ref={armR} position={[.23,.78,0]}><mesh position={[.055,-.22,0]} rotation={[0,0,.12]}><capsuleGeometry args={[.066,.30,4,6]}/><meshStandardMaterial color={col}/></mesh></group>
     <Box args={[.15,.27,.16]} position={[-.12,.17,.03]} color={pantsColors[p.pants||0]}/>
-    <Box args={[.15,.27,.16]} position={[.12,.17,.03]} color={pantsColors[p.pants||0]}/><Box args={[.22,.09,.29]} position={[-.13,-.02,.13]} color="#f5efff"/><Box args={[.22,.09,.29]} position={[.13,-.02,.13]} color="#f5efff"/>
+    <Box args={[.15,.27,.16]} position={[.12,.17,.03]} color={pantsColors[p.pants||0]}/>
     {isMe&&<mesh position={[0,.012,0]} rotation={[-Math.PI/2,0,0]}><ringGeometry args={[.35,.42,32]}/><meshBasicMaterial color="#e6a0ff" side={THREE.DoubleSide}/></mesh>}
     {(p.action==='dance'||p.action==='cheer')&&<Html position={[0,1.45,0]} center distanceFactor={12} style={{pointerEvents:'none'}}><div className="avatar-bubble">{p.action==='cheer'?'🙌':p.zone==='stage'?'⭐':'♫'}</div></Html>}
     {lastMessage&&<Html position={[0,1.85,0]} center distanceFactor={12} style={{pointerEvents:'none'}}><div className="avatar-chat">{lastMessage.text.slice(0,55)}</div></Html>}
-    <Html position={[0,1.65,0]} center distanceFactor={12} style={{pointerEvents:'none'}}><div className={'avatar-label '+(isMe?'avatar-me':'')}>{isMe?'✦ Bạn':p.name.slice(0,18)}</div></Html>
+    {isMe&&<Html position={[0,1.55,0]} center distanceFactor={12} style={{pointerEvents:'none'}}><div className="avatar-label">Bạn</div></Html>}
    </group>
  </group>;
 }
 function Stage({disco, theme='neon'}){
- const spotXs=[-4.5,-1.5,1.5,4.5];
  const palette={neon:['#de83ff','#789dff','#2c1a4d'],sunset:['#ffa476','#ff65ba','#42233e'],galaxy:['#80a8ff','#bc84ff','#19183b']}[theme] || ['#78ffc2','#a48df7','#0c2e32'];
  const strips=useRef();
  useFrame(({clock})=>{if(strips.current)strips.current.position.y=.015+Math.sin(clock.elapsedTime*2.3)*.014;});
  return <group>
-  {/* Four dedicated stage spots; a connected LED path runs down both aisles. */}
-  {spotXs.map((x,i)=><group key={'spot'+i} position={[x,.405,-6.45]}>
-    <mesh rotation={[-Math.PI/2,0,0]}><ringGeometry args={[.43,.52,32]}/><meshBasicMaterial color={i%2?palette[0]:palette[1]} side={THREE.DoubleSide}/></mesh>
-    <Html position={[0,.08,-.70]} center distanceFactor={7} style={{pointerEvents:'none'}}><div className="vimo-stage-spot">VỊ TRÍ {i+1}</div></Html>
-  </group>)}
-  {[-9.1,9.1].map(x=><group key={'walk'+x}>
-   <Box position={[x,-.29,2]} args={[.07,.025,14.3]} color={palette[0]} emissive={palette[0]} emissiveIntensity={1.6}/>
-   {Array.from({length:13},(_,i)=><Box key={i} position={[x,-.26,-4.75+i*1.12]} args={[.38,.025,.08]} color={palette[1]} emissive={palette[1]} emissiveIntensity={1.4}/>)}
-   <Box position={[x>0?7.6:-7.6,-.28,-4.72]} args={[3,.025,.07]} color={palette[0]} emissive={palette[0]} emissiveIntensity={2}/>
-  </group>)}
   {/* Raised 3D dance platform in front of the cinema screen. */}
   <Box args={[13.8,.53,2.55]} position={[0,.02,-6.55]} color="#182127" metalness={.45}/>
   <Box args={[13.2,.075,2.33]} position={[0,.33,-6.55]} color={palette[2]} emissive={palette[2]} emissiveIntensity={disco?.4:.05} metalness={.55}/>
@@ -219,8 +189,29 @@ function DemoScreen({media, disco}){
  return <group position={[0,4.8,-8.5]}>
   <mesh ref={surface}><planeGeometry args={[12.35,6.9]}/><meshStandardMaterial color="#111c22" emissive="#378888" emissiveIntensity={.2}/></mesh>
   <mesh position={[0,0,.03]}><planeGeometry args={[11.8,6.35]}/><meshBasicMaterial color="#061015"/></mesh>
-  <Html transform center position={[0,0,.07]} distanceFactor={1.28} style={{pointerEvents:'none'}}><div className="demo-screen"><div className="sun"/><div className="wave wave-a"/><div className="wave wave-b"/><div className="demo-label">VIMO <span>CINÉ</span></div><div className="demo-sub">{media.type==='audio'?media.title:'WELCOME TO THE PARTY'}</div><div className="equalizer">{Array.from({length:22},(_,i)=><i key={i} style={{animationDelay:`${i*-.11}s`}}/>)}</div><div className="demo-ticker">✦ LIVE TOGETHER · DANCE TOGETHER · FEEL THE BEAT ✦</div></div></Html>
+  <Html transform center position={[0,0,.07]} distanceFactor={1.28} style={{pointerEvents:'none'}}><div className="demo-screen"><div className="sun"/><div className="wave wave-a"/><div className="wave wave-b"/><div className="demo-label">HỘI<span>ROOM</span></div><div className="demo-sub">{media.type==='audio'?media.title:'WELCOME TO THE PARTY'}</div><div className="equalizer">{Array.from({length:22},(_,i)=><i key={i} style={{animationDelay:`${i*-.11}s`}}/>)}</div><div className="demo-ticker">✦ LIVE TOGETHER · DANCE TOGETHER · FEEL THE BEAT ✦</div></div></Html>
  </group>;
+}
+function CategoryDecor({category}) {
+ if(category==='dj')return <group>
+  <Box position={[0,.88,-5.7]} args={[5.3,1.15,1.32]} color="#211032" metalness={.7}/>
+  <Box position={[0,1.5,-5.35]} args={[4.7,.1,.75]} color="#f44de0" emissive="#b945ec" emissiveIntensity={2}/>
+  {[-1,1].map(side=><group key={side} position={[side*1.5,1.55,-5.05]}>
+   <mesh rotation={[-Math.PI/2,0,0]}><cylinderGeometry args={[.48,.48,.05,32]}/><meshStandardMaterial color="#212c39" metalness={.8}/></mesh>
+   <mesh position={[0,.04,0]} rotation={[-Math.PI/2,0,0]}><torusGeometry args={[.32,.04,8,32]}/><meshBasicMaterial color="#91eeff"/></mesh>
+  </group>)}
+  <Html center position={[0,2.25,-5.65]}><div className="room3d-label">🎧 HOIROOM DJ CLUB</div></Html>
+ </group>;
+ if(category==='musicbox')return <group>
+  {[-1,1].map(side=><group key={side} position={[side*7.5,.2,3.5]}>
+   <Box args={[4.2,.7,2.1]} position={[0,.2,0]} color="#655477"/>
+   <Box args={[4.2,1.3,.4]} position={[0,.75,.95]} color="#886ba0"/>
+  </group>)}
+  <Box position={[0,.6,-5.6]} args={[.14,1.8,.14]} color="#ced3e9" metalness={.9}/>
+  <mesh position={[0,1.55,-5.6]} rotation={[.3,0,-.3]}><capsuleGeometry args={[.10,.24,5,8]}/><meshStandardMaterial color="#f2c3f9" metalness={.7}/></mesh>
+  <Html center position={[0,2.25,-5.8]}><div className="room3d-label">🎤 MUSIC BOX KARAOKE</div></Html>
+ </group>;
+ return null;
 }
 function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled,volume,videoFocus,onVideoFocusChange,onEnableAudio,onDuration,onError}){
  const {camera}=useThree();const participants=room?.participants||[];const orbit=useRef();
@@ -239,11 +230,14 @@ function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled
   <Box args={[15,.15,3.1]} position={[0,.06,-7.15]} color="#20262a"/>
   <Box args={[13.2,7.65,.3]} position={[0,4.8,-8.73]} color="#3d4843" metalness={.75}/>
   <Box args={[12.8,7.2,.18]} position={[0,4.8,-8.54]} color="#080516"/>
-  <Stage disco={room.disco} theme={room.stageTheme}/><DemoScreen media={room.media} disco={room.disco}/><ScreenVideo media={room.media} volume={volume} audioEnabled={audioEnabled} onEnded={onMediaEnded}/>
+  <Stage disco={room.disco} theme={room.stageTheme}/><CategoryDecor category={room.category}/><DemoScreen media={room.media} disco={room.disco}/><ScreenVideo media={room.media} volume={volume} audioEnabled={audioEnabled} onEnded={onMediaEnded}/>
   {/* HTML is attached to the real cinema plane. Drei transform projects the entire
       16:9 YouTube iframe in CSS3D, so it follows orbit and perspective exactly. */}
   {room.media.type==='youtube'&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.37]} zIndexRange={[4,2]} wrapperClass="vimo-3d-video-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
    <YouTubePlayer key={room.media.url} media={room.media} volume={volume} audioEnabled={audioEnabled} focus={videoFocus} onFocusChange={onVideoFocusChange} onEnableAudio={onEnableAudio} onEnded={onMediaEnded} onDuration={onDuration} onError={onError}/>
+  </Html>}
+  {room.media.type==='soundcloud'&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.37]} zIndexRange={[4,2]} wrapperClass="vimo-3d-video-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
+   <SoundCloudPlayer media={room.media} volume={volume} audioEnabled={audioEnabled} onEnded={onMediaEnded} onDuration={onDuration} onError={onError}/>
   </Html>}
   {room.photoActive&&<Html transform center distanceFactor={0.96} position={[0,4.80,-8.32]} zIndexRange={[5,3]} wrapperClass="vimo-3d-photo-anchor" style={{width:1280,height:720,pointerEvents:'none'}}>
    <div className="photo-projection vimo-photo-plane"><img src={room.photoActive.url} alt="Ảnh đang được chiếu ưu tiên"/><div className="photo-projection-caption"><strong>{room.photoActive.caption||'Khoảnh khắc đáng nhớ'}</strong><span>Ảnh của {room.photoActive.addedBy} · Đang hiển thị</span></div></div>
@@ -256,7 +250,7 @@ function Scene({room,you,view,onSeat,onPerson,onMediaEnded,messages,audioEnabled
    <Box args={[.08,4.5,.11]} position={[11.20,2.35,-7.3+i*1.55]} color="#ffb890" emissive="#b95788" emissiveIntensity={1.1}/>
   </group>)}
   {Array.from({length:10},(_,i)=><Box key={i} args={[18,.12,.21]} position={[0,-.08+i*.105,-2.5+i*1.2]} color="#27252a"/>)}
-  <Chairs occupants={participants} onSeat={onSeat}/>
+  {room.category!=='dj'&&<Chairs occupants={participants} onSeat={onSeat}/>}
   {participants.map(p=><Avatar key={p.id} p={p} others={participants} isMe={you===p.id} onClick={onPerson} bpm={room.bpm} lastMessage={(messages||[]).filter(m=>m.userId===p.id&&Date.now()-m.time<5500).at(-1)}/>)}
   <Laser disco={room.disco}/>
   {room.disco&&<pointLight position={[0,6,-5]} intensity={22} distance={17} color="#d297ff"/>}

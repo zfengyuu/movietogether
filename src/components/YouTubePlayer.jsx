@@ -1,5 +1,5 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {Volume2, ExternalLink, Info} from 'lucide-react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {Maximize2, Minimize2, Play, Volume2, ExternalLink, Info} from 'lucide-react';
 import {extractYouTubeId} from '../utils/youtube.js';
 
 // The official YouTube iframe is a DOM surface aligned to the WebGL screen.
@@ -30,6 +30,24 @@ export default function YouTubePlayer({media,volume,audioEnabled,focus,onFocusCh
  const mount=useRef(null),wrapper=useRef(null),player=useRef(null),ready=useRef(false),data=useRef({});
  const [blocked,setBlocked]=useState(false),[error,setError]=useState(''),[loaded,setLoaded]=useState(false);
  data.current={media,volume,audioEnabled,onEnded,onDuration,onError};
+ const enterFocus=useCallback(()=>{
+  // Must be requested within the click gesture. The CSS3D Html parent
+  // does not act as a second video layer; fullscreen promotes this same DOM node.
+  const request=wrapper.current?.requestFullscreen?.();
+  if(request){request.then(()=>onFocusChange(true)).catch(()=>data.current.onError?.('Không thể bật toàn màn hình. Hãy thử trên trình duyệt khác.'));}
+  else data.current.onError?.('Trình duyệt không hỗ trợ toàn màn hình.');
+ },[onFocusChange]);
+ const exitFocus=useCallback(()=>{
+  if(document.fullscreenElement===wrapper.current)document.exitFullscreen?.().catch(()=>{});
+  onFocusChange(false);
+ },[onFocusChange]);
+ useEffect(()=>{
+  const onFullscreen=()=>{if(document.fullscreenElement===wrapper.current)onFocusChange(true);else if(!document.fullscreenElement)onFocusChange(false);};
+  document.addEventListener('fullscreenchange',onFullscreen);
+  const esc=e=>{if(e.key==='Escape'&&focus)exitFocus();};
+  document.addEventListener('keydown',esc);
+  return()=>{document.removeEventListener('fullscreenchange',onFullscreen);document.removeEventListener('keydown',esc);};
+ },[focus,exitFocus,onFocusChange]);
  useEffect(()=>{
   if(!videoId||!mount.current)return;
   let cancelled=false;ready.current=false;setError('');setBlocked(false);setLoaded(false);
@@ -100,13 +118,13 @@ export default function YouTubePlayer({media,volume,audioEnabled,focus,onFocusCh
  };
 
  return <>
-  <section ref={wrapper} className="youtube-layer vimo-three-youtube" aria-label="Trình phát YouTube trong rạp">
-
+  <section ref={wrapper} className={'youtube-layer vimo-three-youtube '+(focus?'youtube-focus':'')} aria-label="Trình phát YouTube trong rạp">
+   {focus&&<div className="youtube-focus-head"><div><b>ĐANG XEM • YOUTUBE</b><strong>{media.title}</strong></div><button onClick={exitFocus} title="Thu nhỏ về rạp"><Minimize2 size={18}/> Về rạp</button></div>}
    <div className="youtube-video-surface">
     <div className="yt-native-player"><div key={videoId} ref={mount} className="yt-mount"/></div>
    </div>
-
-   {!focus&&<div className="youtube-outside-actions">{(blocked||!audioEnabled)&&<button onClick={start}><Volume2 size={14}/> Bật video</button>}</div>}
+   {focus&&<div className="youtube-focus-footer"><span>Điều khiển phát ở bảng bên trái · Video sử dụng YouTube IFrame chính thức</span><button onClick={start}><Play size={15}/> Bật âm thanh & phát</button><a target="_blank" rel="noopener noreferrer" href={`https://www.youtube.com/watch?v=${videoId}`}><ExternalLink size={14}/> Mở trên YouTube</a></div>}
+   {!focus&&<div className="youtube-outside-actions"><button onClick={enterFocus}><Maximize2 size={14}/> Xem lớn</button>{(blocked||!audioEnabled)&&<button onClick={start}><Volume2 size={14}/> Bật video</button>}</div>}
    {error&&<div className="youtube-error"><Info size={17}/><span>{error}</span><a href={`https://www.youtube.com/watch?v=${videoId}`} target="_blank" rel="noopener noreferrer">Mở YouTube <ExternalLink size={13}/></a></div>}
   </section>
  </>;

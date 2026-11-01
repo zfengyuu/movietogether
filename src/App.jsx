@@ -1,33 +1,37 @@
 import React, {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import { io } from 'socket.io-client';
-import { Armchair, AudioLines, Check, ChevronDown, Clapperboard, Clipboard, Crown, DoorOpen, Eye, Film, Heart, Info, LockKeyhole, LogIn, Maximize2, Menu, MessageCircle, Music2, Pause, Play, Plus, Send, Settings, Share2, Shirt, SkipForward, Smile, Sparkles, Theater, Ticket, Users, Video, Volume2, VolumeX, Vote, Waves, X } from 'lucide-react';
+import { Room as LiveKitRoom, RoomEvent, Track } from 'livekit-client';
+import { Armchair, AudioLines, Check, ChevronDown, Clapperboard, Clipboard, Crown, DoorOpen, Eye, Film, Heart, Info, LockKeyhole, LogIn, Maximize2, Menu, MessageCircle, Mic, MicOff, Music2, Pause, Play, Plus, Send, Settings, Share2, Shirt, SkipForward, Smile, Sparkles, Theater, Ticket, Users, Video, Volume2, VolumeX, Vote, Waves, X } from 'lucide-react';
 import Theatre from './components/Theatre.jsx';
 import AudioPlayer from './components/AudioPlayer.jsx';
 import {useBeat} from './components/useBeat.js';
+import {ROOM_CATEGORIES} from '../shared/rooms.js';
+import { photoCost, PHOTO_MIN_SECONDS, PHOTO_MAX_SECONDS, PHOTO_VND_PER_SECOND } from '../shared/photo.js';
 
 const socket=io({autoConnect:false});
 const params=new URLSearchParams(window.location.search);
 const initialCode=(params.get('room')||'DISCO').toUpperCase();
+const initialInvite=params.get('invite')||'';
 const sampleMedia={type:'demo',url:'',title:'DISCO NIGHT • 128 BPM',playing:false,position:0,updatedAt:Date.now()};
-const preview={id:'DISCO',name:'Phòng Disco cộng đồng',maxPeople:100,participants:[],media:sampleMedia,queue:[],disco:true,bpm:128,stageTheme:'neon',messages:[],votes:0};
+const preview={category:'cinema',id:'DISCO',name:'Phòng Disco cộng đồng',maxPeople:100,participants:[],media:sampleMedia,queue:[],disco:true,bpm:128,stageTheme:'neon',messages:[],votes:0};
 const formatTime=n=>{n=Math.max(0,Math.floor(n||0));return `${Math.floor(n/60).toString().padStart(2,'0')}:${(n%60).toString().padStart(2,'0')}`};
 const control=(event, payload={}, callback)=>socket.emit(event,payload,(ack)=>callback?.(ack));
-const emojiList=['😀','😂','🤣','😊','😍','🥰','😘','😎','🥳','😢','😭','😱','🤔','😡','❤️','🔥','👏','🎉','🕺','🎶','🎬','🌹'];
+const emojiList=['❤️','🔥','👏','🎉','😂','🕺'];
 // Convert server snapshot time to client receive time, avoiding skewed device clocks.
 const localizeRoom=r=>({...r,media:{...r.media,updatedAt:Date.now()}});
 function App(){
  const [joined,setJoined]=useState(false),[room,setRoom]=useState(null),[you,setYou]=useState('');
  const [name,setName]=useState(localStorage.getItem('disco-name')||''),[code,setCode]=useState(initialCode),[password,setPassword]=useState('');
  const [account,setAccount]=useState(null),[authMode,setAuthMode]=useState('login'),[authOpen,setAuthOpen]=useState(false),[authName,setAuthName]=useState(''),[authPassword,setAuthPassword]=useState(''),[authBusy,setAuthBusy]=useState(false);
- const [wallet,setWallet]=useState({balance:0,demoCredited:false,demoEnabled:false,ledger:[]}),[photoFile,setPhotoFile]=useState(null),[photoCaption,setPhotoCaption]=useState(''),[photoDuration,setPhotoDuration]=useState(10),[photoBusy,setPhotoBusy]=useState(false);
- const [newName,setNewName]=useState('Phòng party của tôi'),[newPassword,setNewPassword]=useState('');
+ const [wallet,setWallet]=useState({balance:0,demoCredited:false,demoEnabled:false,ledger:[]}),[topupAmount,setTopupAmount]=useState(20000),[topupOrder,setTopupOrder]=useState(null),[photoFile,setPhotoFile]=useState(null),[photoCaption,setPhotoCaption]=useState(''),[photoDuration,setPhotoDuration]=useState(10),[photoBusy,setPhotoBusy]=useState(false),[topupOpen,setTopupOpen]=useState(false),[pendingPhoto,setPendingPhoto]=useState(null);
+ const [newName,setNewName]=useState('Phòng party của tôi'),[newPassword,setNewPassword]=useState(''),[newCategory,setNewCategory]=useState('cinema'),[newCapacity,setNewCapacity]=useState(30),[newPrivate,setNewPrivate]=useState(true),[inviteToken,setInviteToken]=useState(initialInvite);
  const [create,setCreate]=useState(false),[rooms,setRooms]=useState([]),[panel,setPanel]=useState(''),[notice,setNotice]=useState('');
  const [view,setView]=useState('front'),[volume,setVolume]=useState(.75),[audioEnabled,setAudioEnabled]=useState(false);
  const [videoFocus,setVideoFocus]=useState(false);
  const [chat,setChat]=useState(''),[url,setUrl]=useState(''),[title,setTitle]=useState(''),[messages,setMessages]=useState([]);
- const [reactions,setReactions]=useState([]),[dance,setDance]=useState('bounce'),[emojiOpen,setEmojiOpen]=useState(false),[depositAmount,setDepositAmount]=useState(20000),[depositInfo,setDepositInfo]=useState(null),[depositBusy,setDepositBusy]=useState(false),[qrConfigured,setQrConfigured]=useState(false);
+ const [reactions,setReactions]=useState([]),[dance,setDance]=useState('bounce'),[voice,setVoice]=useState(false),[voiceLoading,setVoiceLoading]=useState(false);
  const [online,setOnline]=useState(true),[clock,setClock]=useState(0),[uploadBusy,setUploadBusy]=useState(false),[uploadFile,setUploadFile]=useState(null),[giftFlash,setGiftFlash]=useState(null);
- const chatEnd=useRef(null),joinRef=useRef(null),roomRef=useRef(null),audioRef=useRef(null),uploadToken=useRef(null);
+ const chatEnd=useRef(null),joinRef=useRef(null),roomRef=useRef(null),livekit=useRef(null),voiceAudio=useRef([]),audioRef=useRef(null),uploadToken=useRef(null);
  roomRef.current=room;
  const toast=useCallback((s)=>{setNotice(s);setTimeout(()=>setNotice(n=>n===s?'':n),4200);},[]);
  const showPanel=p=>setPanel(v=>v===p?'':p);
@@ -49,44 +53,50 @@ function App(){
   const onReaction=r=>{setReactions(v=>[...v,r]);setTimeout(()=>setReactions(v=>v.filter(x=>x.id!==r.id)),2600);};
   const onKicked=msg=>{joinRef.current=null;uploadToken.current=null;setJoined(false);setRoom(null);setYou('');setPanel('');toast(msg);};
   const onWallet=w=>setWallet(w);
+  const onPhotoIntent=status=>{setPendingPhoto(null);setTopupOpen(false);if(status.ok){setPhotoFile(null);setPhotoCaption('');}toast(status.message||'Trạng thái ảnh đã cập nhật.');};
   const onGift=g=>{setGiftFlash(g);setTimeout(()=>setGiftFlash(old=>old?.id===g.id?null:old),3800);};
-  socket.on('connect',onConnect);socket.on('disconnect',onDisconnect);socket.on('room_state',onRoom);socket.on('chat_message',onMessage);socket.on('media_sync',onMedia);socket.on('reaction',onReaction);socket.on('kicked',onKicked);socket.on('gift_received',onGift);socket.on('wallet_state',onWallet);
-  return ()=>{socket.off('connect',onConnect);socket.off('disconnect',onDisconnect);socket.off('room_state',onRoom);socket.off('chat_message',onMessage);socket.off('media_sync',onMedia);socket.off('reaction',onReaction);socket.off('kicked',onKicked);socket.off('gift_received',onGift);socket.off('wallet_state',onWallet);socket.disconnect();};
+  socket.on('connect',onConnect);socket.on('disconnect',onDisconnect);socket.on('room_state',onRoom);socket.on('chat_message',onMessage);socket.on('media_sync',onMedia);socket.on('reaction',onReaction);socket.on('kicked',onKicked);socket.on('gift_received',onGift);socket.on('wallet_state',onWallet);socket.on('photo_intent_status',onPhotoIntent);
+  return ()=>{socket.off('connect',onConnect);socket.off('disconnect',onDisconnect);socket.off('room_state',onRoom);socket.off('chat_message',onMessage);socket.off('media_sync',onMedia);socket.off('reaction',onReaction);socket.off('kicked',onKicked);socket.off('gift_received',onGift);socket.off('wallet_state',onWallet);socket.off('photo_intent_status',onPhotoIntent);socket.disconnect();};
  },[refreshRooms,toast]);
  useEffect(()=>{chatEnd.current?.scrollIntoView({block:'end',behavior:'smooth'});},[messages.length,panel]);
  useEffect(()=>{const t=setInterval(()=>setClock(n=>n+1),1000);return ()=>clearInterval(t);},[]);
  useEffect(()=>{if(room?.media?.type!=='youtube')setVideoFocus(false);},[room?.media?.type]);
- useEffect(()=>{fetch('/api/wallet/vietqr-config').then(r=>r.json()).then(d=>setQrConfigured(!!d.configured)).catch(()=>{});},[]);
+ useEffect(()=>()=>{livekit.current?.disconnect();voiceAudio.current.forEach(a=>a.remove());},[]);
  const send=(event,value={},okMessage='')=>socket.emit(event,value,a=>{if(!a?.ok)toast(a?.error||'Thao tác thất bại');else if(okMessage)toast(okMessage);});
- const joinRoom=useCallback((nextCode=code,pass=password)=>{
+ const joinRoom=useCallback((nextCode=code,pass=password,roomInvite=inviteToken)=>{
   const display=name.trim().slice(0,22);if(!display)return toast('Hãy nhập tên hiển thị trước nhé');
-  const data={roomId:nextCode.trim().toUpperCase(),name:display,password:pass,walletToken:localStorage.getItem('disco-demo-wallet')||''};
+  const data={roomId:nextCode.trim().toUpperCase(),name:display,password:pass,invite:roomInvite,walletToken:localStorage.getItem('disco-demo-wallet')||''};
   if(!socket.connected){toast('Đang kết nối server, hãy thử lại');return;}
   socket.emit('join_room',data,ack=>{
    if(!ack?.ok)return toast(ack?.error||'Không thể vào phòng');
    joinRef.current={...data,walletToken:ack.walletToken};uploadToken.current=ack.uploadToken;localStorage.setItem('disco-demo-wallet',ack.walletToken);localStorage.setItem('disco-name',display);setYou(ack.you);setRoom(localizeRoom(ack.room));setMessages(ack.room.messages||[]);setJoined(true);setPanel('');
-   window.history.replaceState({},'',`?room=${encodeURIComponent(data.roomId)}`);
+   window.history.replaceState({},'',`?room=${encodeURIComponent(data.roomId)}${data.invite?'&invite='+encodeURIComponent(data.invite):''}`);
   });
- },[code,password,name,toast]);
+ },[code,password,name,inviteToken,toast]);
  const createRoom=async()=>{
   if(!name.trim())return toast('Hãy nhập tên của bạn');
-  try{const res=await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:newName,password:newPassword})});
-   const body=await res.json();if(!res.ok)throw Error(body.error||'Không tạo được phòng');setCode(body.id);joinRoom(body.id,newPassword);
+  try{const res=await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:newName,password:newPassword,category:newCategory,maxPeople:Number(newCapacity),isPrivate:newPrivate})});
+   const body=await res.json();if(!res.ok)throw Error(body.error||'Không tạo được phòng');setCode(body.id);setInviteToken(body.inviteToken||'');joinRoom(body.id,newPassword,body.inviteToken||'');
   }catch(e){toast(e.message)}
  };
  const leave=()=>{
   socket.emit('leave_room');joinRef.current=null;uploadToken.current=null;setJoined(false);setRoom(null);setYou('');setMessages([]);setPanel('');
-  refreshRooms();
+  livekit.current?.disconnect();livekit.current=null;setVoice(false);refreshRooms();
  };
- const invite=async()=>{const link=`${location.origin}/?room=${room?.id}`;try{await navigator.clipboard.writeText(link);toast('Đã sao chép link mời!')}catch{window.prompt('Sao chép link:',link)}};
+ const invite=async()=>{const token=inviteToken||joinRef.current?.invite||'';const link=`${location.origin}/?room=${encodeURIComponent(room?.id||'')}${room?.isPrivate&&token?'&invite='+encodeURIComponent(token):''}`;try{await navigator.clipboard.writeText(link);toast('Đã sao chép link mời!')}catch{window.prompt('Sao chép link:',link)}};
  const player=cmd=>send('media_control',{command:cmd});
+ const fullscreenVideo=()=>{
+  const el=document.querySelector('.vimo-three-youtube');
+  if(!el?.requestFullscreen)return toast('Trình duyệt không hỗ trợ xem video toàn màn hình');
+  el.requestFullscreen().then(()=>setVideoFocus(true)).catch(()=>toast('Không mở được toàn màn hình. Hãy bấm Xem lớn từ rạp.'));
+ };
  const screenMedia=room?.media||sampleMedia;
  const progress=screenMedia.position+(screenMedia.playing?(Date.now()-screenMedia.updatedAt)/1000:0);
  const changeMedia=(queueOnly=false)=>{
-  if(!url.trim())return toast('Hãy dán link YouTube / MP3 / MP4 / HLS');
+  if(!url.trim())return toast('Hãy dán link YouTube / SoundCloud / MP3 / MP4 / HLS');
   const event=queueOnly?'queue_add':'media_control';
   const payload=queueOnly?{url,title:title||'Nhạc / video được gửi'}:{command:'load',media:{url,title:title||'Nhạc / video được gửi'}};
-  socket.emit(event,payload,a=>{if(!a?.ok)return toast(a?.error||'Không gửi được');setUrl('');setTitle('');setPanel('queue');toast(queueOnly?'Đã thêm vào hàng chờ':'Đã phát nội dung mới');});
+  socket.emit(event,payload,a=>{if(!a?.ok)return toast(a?.error||'Không gửi được');setUrl('');setTitle('');setPanel('queue');if(!queueOnly)setVideoFocus(true);toast(queueOnly?'Đã thêm vào hàng chờ':'Đã phát nội dung mới');});
  };
  const uploadAudio=async()=>{
   if(!uploadFile)return toast('Hãy chọn tệp nhạc trước');
@@ -104,6 +114,17 @@ function App(){
   if(audioEnabled){setAudioEnabled(false);demoBeat.disable();return;}
   setAudioEnabled(true);if(screenMedia.type==='audio'&&screenMedia.playing){audioRef.current?.play().catch(()=>{});}await demoBeat.enable().catch(()=>{});
  };
+ const toggleVoice=async()=>{
+  if(voice){await livekit.current?.disconnect();livekit.current=null;voiceAudio.current.forEach(n=>n.remove());voiceAudio.current=[];setVoice(false);return;}
+  setVoiceLoading(true);
+  try{
+   const r=await fetch('/api/livekit/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({roomId:room.id,socketId:you})});const data=await r.json();if(!r.ok)throw Error(data.error||'Voice không khả dụng');
+   const live=new LiveKitRoom({adaptiveStream:true,dynacast:true});
+   live.on(RoomEvent.TrackSubscribed,(track)=>{if(track.kind===Track.Kind.Audio){const el=track.attach();el.autoplay=true;document.body.appendChild(el);voiceAudio.current.push(el);}});
+   live.on(RoomEvent.TrackUnsubscribed,track=>{track.detach().forEach(el=>{el.remove();voiceAudio.current=voiceAudio.current.filter(x=>x!==el)})});
+   await live.connect(data.url,data.token);await live.localParticipant.setMicrophoneEnabled(room.category!=='musicbox'||room.karaokeSinger===you);livekit.current=live;setVoice(true);
+  }catch(e){toast(e.message);livekit.current?.disconnect();livekit.current=null;setVoice(false);}finally{setVoiceLoading(false)}
+ };
  const authSubmit=async e=>{
   e.preventDefault();setAuthBusy(true);
   try{
@@ -118,21 +139,25 @@ function App(){
   try{await fetch('/api/auth/logout',{method:'POST'});}catch{}
   setAccount(null);socket.disconnect();socket.connect();toast('Đã đăng xuất');
  };
- const createDeposit=async()=>{
-  if(!account)return toast('Đăng nhập để tạo mã VietQR');
-  setDepositBusy(true);
-  try{const r=await fetch('/api/wallet/vietqr-intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:depositAmount})});const d=await r.json();if(!r.ok)throw Error(d.error||'Không tạo được mã QR');setDepositInfo(d);}
-  catch(e){toast(e.message)}finally{setDepositBusy(false)}
+ const createSandboxTopup=async()=>{
+  if(!account)return toast('Vui lòng đăng nhập username trước khi tạo lệnh nạp');
+  try {
+   const response=await fetch('/api/wallet/topup-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:topupAmount})});
+   const data=await response.json();if(!response.ok)throw Error(data.error||'Không tạo được lệnh nạp');
+   setTopupOrder(data.order);toast('Đã tạo lệnh nạp SANDBOX. Không chuyển khoản tiền thật!');
+  }catch(e){toast(e.message);}
  };
  const submitPhoto=async()=>{
   if(!photoFile)return toast('Vui lòng chọn ảnh trước khi gửi');
+  if(!account&&wallet.balance<photoCost(photoDuration)){setAuthOpen(true);return toast('Đăng nhập username trước để có thể nạp tiền và tự gửi ảnh sau khi thanh toán.');}
   if(photoFile.size>12*1024*1024)return toast('Ảnh vượt quá 12 MB');
   setPhotoBusy(true);
   try{
    const result=await fetch('/api/upload-photo',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Socket-ID':you,'X-Upload-Token':uploadToken.current||''},body:photoFile});
    const data=await result.json();if(!result.ok)throw Error(data.error||'Không tải được ảnh');
-   socket.emit('photo_submit',{photoId:data.photoId,duration:photoDuration,caption:photoCaption},ack=>{
+   socket.emit('photo_submit',{photoId:data.photoId,duration:photoDuration,caption:photoCaption,deferIfInsufficient:true},ack=>{
     setPhotoBusy(false);
+    if(ack?.needsTopup){setPendingPhoto({photoId:data.photoId,duration:photoDuration,cost:photoCost(photoDuration)});setTopupAmount(Math.min(1000000,Math.max(10000,Math.ceil((ack.shortfall||10000)/1000)*1000)));setTopupOpen(true);return toast('Đã giữ ảnh chờ. Nạp đủ xu sandbox để tự đưa ảnh lên màn hình.');}
     if(!ack?.ok)return toast(ack?.error||'Không thể chiếu ảnh');
     setPhotoFile(null);setPhotoCaption('');setPanel('photo');toast('Ảnh đã vào hàng chiếu ưu tiên!');
    });
@@ -144,29 +169,29 @@ function App(){
   <div className="cinema-glow"/>
   <AudioPlayer media={screenMedia} volume={volume} audioEnabled={audioEnabled} playerRef={audioRef} onEnded={()=>{if(isHost)player('next')}} onDuration={n=>{if(isHost&&screenMedia.type==='audio'&&Math.abs((screenMedia.duration||0)-n)>1)send('media_control',{command:'duration',duration:n});}} onError={toast}/>
   <header className="topbar">
-   <div className="brand" onClick={()=>showPanel('about')} role="button" tabIndex={0}><div className="logo">V</div><div><div className="brand-main">VIMO <b>CINÉ</b></div><div className="brand-small">XEM · NGHE · QUẨY</div></div></div>
+   <div className="brand" onClick={()=>showPanel('about')} role="button" tabIndex={0}><div className="logo">V</div><div><div className="brand-main">HỘI<b>ROOM</b></div><div className="brand-small">XEM · NGHE · QUẨY</div></div></div>
    <div className="online-bar"><span className="live-dot"/> {screenMedia.playing?'Đang chiếu':'Sẵn sàng'} <span className="sep"/> <Users size={14}/> <b>{activeRoom.participants.length}</b> / {activeRoom.maxPeople} trong phòng</div>
    <div className="top-actions">
     {joined&&<><button className="pill-code" onClick={invite}><Ticket size={15}/> {room.id} <Clipboard size={14}/></button><button className="icon-btn" onClick={invite} title="Chia sẻ"><Share2 size={17}/></button></>}
-    <button className="icon-btn" onClick={()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen?.()} title="Xem toàn màn hình"><Maximize2 size={17}/></button>
+    <button className="icon-btn" onClick={()=>screenMedia.type==='youtube'?fullscreenVideo():document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen?.()} title="Xem toàn màn hình"><Maximize2 size={17}/></button>
     <button className="icon-btn" onClick={()=>showPanel('settings')} title="Cài đặt"><Settings size={18}/></button>
     <button className="avatar-profile" onClick={()=>setAuthOpen(true)} title={account?'Tài khoản: '+account.username:'Đăng nhập / Đăng ký'}>{(account?.username?.[0]||name[0]||'K').toUpperCase()}</button>
    </div>
   </header>
   <section className="now-playing">
-   <div className="overline">TRÊN MÀN ẢNH</div>
+   <div className="overline">{room?.category==='dj'?'SÀN NHẠC DJ':room?.category==='musicbox'?'KARAOKE MUSIC BOX':'TRÊN MÀN ẢNH'}</div>
    <h1><span className="youtube-mark">{screenMedia.type==='youtube'?'▶':'♫'}</span>{screenMedia.title}</h1>
    <div className="muted-s">{screenMedia.type==='demo'?'Original disco demo · Không bản quyền':screenMedia.type==='youtube'?'YouTube • Phát đồng bộ':screenMedia.type==='audio'?'Audio • Phát đồng bộ':'Video MP4 / HLS'} · {formatTime(progress)}</div>
    {joined?<>
      <div className="play-controls"><button className="play-button" onClick={()=>player(screenMedia.playing?'pause':'play')} disabled={!isHost}>{screenMedia.playing?<Pause size={14}/>:<Play size={14}/>} {screenMedia.playing?'Tạm dừng':'Phát nhạc'}</button>
-     <button className="vote-btn" onClick={()=>send('vote_skip',{})}><Vote size={14}/> {room.votedIds?.includes(account?.id||you)?'Rút phiếu':'Skip'} {room.votes}/{room.skipNeeded}</button></div>
+     <button className="vote-btn" onClick={()=>send('vote_skip',{})}><Vote size={14}/> {room.votedIds?.includes(you)?'Rút phiếu':'Skip'} {room.votes}/{room.skipNeeded}</button></div>
      <div className="media-progress" title={`${formatTime(progress)} / ${screenMedia.duration?formatTime(screenMedia.duration):'--:--'}`}><div style={{width:`${screenMedia.duration?Math.max(0,Math.min(100,progress/screenMedia.duration*100)):0}%`}}/></div>
-     <div className="bpm-row"><div className="bpm-label"><Waves size={13}/> Disco · {room.bpm} BPM</div></div>
+     <div className="bpm-row"><div className="bpm-label"><Waves size={13}/> Disco · {room.bpm} BPM</div>{screenMedia.type==='youtube'&&<button className="watch-full-button" onClick={fullscreenVideo}><Maximize2 size={14}/> Xem YouTube lớn</button>}</div>
    </>:<div className="bpm-label"><Waves size={13}/> Disco · 128 BPM</div>}
   </section>
   <aside className="side-rail">
    {[
-    ['seats',Armchair,'Chọn ghế'],['media',Plus,'Gửi nhạc/video'],['queue',Music2,'Hàng chờ'],['photo',Sparkles,'Chiếu ảnh'],['support',Heart,'Ủng hộ'],['chat',MessageCircle,'Trò chuyện'],['people',Users,'Người xem'],['appearance',Shirt,'Tủ đồ'],['settings',Settings,'Cài đặt'],
+    ['seats',Armchair,'Chọn ghế'],['karaoke',Mic,'Lượt hát'],['media',Plus,'Gửi nhạc/video'],['queue',Music2,'Hàng chờ'],['photo',Sparkles,'Chiếu ảnh'],['support',Heart,'Ủng hộ'],['chat',MessageCircle,'Trò chuyện'],['people',Users,'Người xem'],['appearance',Shirt,'Tủ đồ'],['voice',Mic,'Mic voice'],['settings',Settings,'Cài đặt'],
    ].map(([key,Icon,label])=><button key={key} className={'rail-btn '+(panel===key?'active':'')} onClick={()=>showPanel(key)}><Icon size={19}/><small>{label}</small>{key==='people'&&joined&&<span className="tiny-count">{room.participants.length}</span>}</button>)}
 
   </aside>
@@ -178,8 +203,7 @@ function App(){
     <button className={youMember?.action==='cheer'?'chosen':''} onClick={()=>send('avatar_action',{action:'cheer'})}>🙌 <span>Cổ vũ</span></button>
     <select value={dance} onChange={e=>{setDance(e.target.value);if(youMember?.action==='dance')send('avatar_action',{action:'dance',dance:e.target.value,zone:youMember.zone})}} aria-label="Kiểu nhảy"><option value="bounce">Bounce</option><option value="shuffle">Shuffle</option><option value="spin">Spin</option></select>
    </div>}
-  {joined&&<div className="chat-bar"><button onClick={()=>setEmojiOpen(v=>!v)} title="Chọn emoji"><Smile size={20}/></button><form onSubmit={e=>{e.preventDefault();if(chat.trim())send('chat_send',chat);setChat('');}}><input value={chat} onChange={e=>setChat(e.target.value)} maxLength={240} placeholder="Nói gì với cả rạp đi..."/><button type="submit" title="Gửi"><Send size={20}/></button></form></div>}
-  {joined&&emojiOpen&&<div className="vimo-emoji-panel"><div className="emoji-heading"><strong>Thêm chút cảm xúc ✨</strong><button onClick={()=>setEmojiOpen(false)}><X size={16}/></button></div><div className="vimo-emojis">{emojiList.map(e=><button key={e} onClick={()=>{setChat(t=>(t+e).slice(0,240));setEmojiOpen(false)}}>{e}</button>)}</div></div>}
+  {joined&&<div className="chat-bar"><button onClick={()=>showPanel('chat')} title="Mở chat"><Smile size={20}/></button><form onSubmit={e=>{e.preventDefault();if(chat.trim())send('chat_send',chat);setChat('');}}><input value={chat} onChange={e=>setChat(e.target.value)} maxLength={240} placeholder="Nói gì với cả rạp đi..."/><button type="submit" title="Gửi"><Send size={20}/></button></form></div>}
   <div className="volume-control"><button onClick={audioToggle} title="Bật hoặc tắt âm thanh">{audioEnabled?<Volume2 size={20}/>:<VolumeX size={20}/>}</button><input aria-label="Âm lượng" type="range" min="0" max="1" step=".01" value={volume} onChange={e=>setVolume(Number(e.target.value))}/><b>{Math.round(volume*100)}%</b></div>
   {giftFlash&&<div key={giftFlash.id} className="gift-toast">🎁 <strong>{giftFlash.name}</strong> vừa gửi {({heart:'trái tim ❤️',star:'ngôi sao ⭐',flower:'hoa 🌹',confetti:'pháo giấy 🎉'})[giftFlash.gift]}!</div>}
   {reactions.map((r,i)=><div key={r.id} className="floating-reaction" style={{left:`${42+(i%7)*3}%`}}>{r.emoji}</div>)}
@@ -187,57 +211,79 @@ function App(){
   {!joined&&<div className="join-overlay"><div className="join-card"><div className="join-icon">🪩</div><div className="eyebrow">RẠP 3D REALTIME</div><h2>Vào rạp, bật nhạc<br/><em>cùng quẩy!</em></h2><p>Chọn ghế, xem phim, nghe nhạc và nhảy disco cùng bạn bè ngay trong trình duyệt.</p>
     {account?<div className="logged-user">✓ Đã đăng nhập: <strong>{account.username}</strong></div>:<button className="auth-entry" onClick={()=>setAuthOpen(true)}>🔐 Đăng nhập / Tạo tài khoản</button>}
     <label>Tên hiển thị</label><input maxLength={22} placeholder="Bạn muốn được gọi là gì?" value={name} onChange={e=>setName(e.target.value)} disabled={!!account}/>
-    {create?<><label>Tên phòng mới</label><input maxLength={50} value={newName} onChange={e=>setNewName(e.target.value)}/><label>Mật khẩu phòng (không bắt buộc)</label><input maxLength={32} type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Để trống nếu công khai"/><button className="cta" onClick={createRoom}><Plus size={18}/> Tạo phòng và vào rạp</button><button className="secondary-cta" onClick={()=>setCreate(false)}>Quay lại</button></>:
+    {create?<><label>Loại phòng</label><select value={newCategory} onChange={e=>{const c=e.target.value;setNewCategory(c);setNewCapacity(ROOM_CATEGORIES[c].defaultSize)}}>{Object.entries(ROOM_CATEGORIES).map(([key,item])=><option key={key} value={key}>{item.label}</option>)}</select><label>Sức chứa ({ROOM_CATEGORIES[newCategory].min}–{ROOM_CATEGORIES[newCategory].max} người)</label><input type="number" min={ROOM_CATEGORIES[newCategory].min} max={ROOM_CATEGORIES[newCategory].max} value={newCapacity} onChange={e=>setNewCapacity(e.target.value)}/><label className="check-line"><input type="checkbox" checked={newPrivate} onChange={e=>setNewPrivate(e.target.checked)}/> Phòng riêng — chỉ vào bằng link mời bí mật</label><label>Tên phòng mới</label><input maxLength={50} value={newName} onChange={e=>setNewName(e.target.value)}/><label>Mật khẩu phòng (không bắt buộc)</label><input maxLength={32} type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Để trống nếu công khai"/><button className="cta" onClick={createRoom}><Plus size={18}/> Tạo phòng và vào rạp</button><button className="secondary-cta" onClick={()=>setCreate(false)}>Quay lại</button></>:
       <><label>Mã phòng</label><input value={code} onChange={e=>setCode(e.target.value.toUpperCase())} maxLength={16} placeholder="DISCO"/><label>Mật khẩu (nếu phòng riêng)</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Không cần cho phòng công khai" onKeyDown={e=>e.key==='Enter'&&joinRoom()}/><button className="cta" onClick={()=>joinRoom()}><LogIn size={18}/> Vào rạp ngay</button><button className="secondary-cta" onClick={()=>setCreate(true)}><Plus size={16}/> Tạo phòng riêng</button></>}
-    <div className="join-public">{rooms.slice(0,3).map(r=><button key={r.id} onClick={()=>{setCode(r.id);if(name.trim())joinRoom(r.id,'')}}><span className="live-dot"/> {r.name} <small>{r.online}/{r.maxPeople}</small></button>)}</div>
+    <div className="room-categories"><b>🎬 Cinema</b><b>🎧 DJ Club</b><b>🎤 Music Box</b></div><div className="join-public">{rooms.slice(0,3).map(r=><button key={r.id} onClick={()=>{setInviteToken('');setCode(r.id);if(name.trim())joinRoom(r.id,'','')}}><span className="live-dot"/> {r.name} <small>{r.online}/{r.maxPeople}</small></button>)}</div>
    </div></div>}
   {joined&&panel&&<div className="panel" key={panel}>
-   <div className="panel-top"><div><div className="overline">VIMO CINÉ</div><h3>{({seats:'Sơ đồ ghế',media:'Gửi nhạc / video',queue:'Danh sách chờ',support:'Ủng hộ phòng',chat:'Trò chuyện',people:'Thành viên online',appearance:'Tủ đồ avatar',photo:'Chiếu ảnh ưu tiên',settings:'Cài đặt rạp',room:'Thông tin phòng',about:'Thông tin dự án'})[panel]||panel}</h3></div><button onClick={()=>setPanel('')}><X size={20}/></button></div>
+   <div className="panel-top"><div><div className="overline">HỘIROOM</div><h3>{({seats:'Sơ đồ ghế',media:'Gửi nhạc / video',queue:'Danh sách chờ',support:'Ủng hộ phòng',chat:'Trò chuyện',people:'Thành viên online',appearance:'Tủ đồ avatar',photo:'Chiếu ảnh ưu tiên',voice:'Trò chuyện voice',settings:'Cài đặt rạp',room:'Thông tin phòng',about:'Thông tin dự án'})[panel]||panel}</h3></div><button onClick={()=>setPanel('')}><X size={20}/></button></div>
    <div className="panel-scroll">
-    {panel==='seats'&&<><p className="panel-hint">Chạm vào một ghế trống để chuyển chỗ ngồi.</p><div className="screen-mini">MÀN HÌNH / SÂN KHẤU</div><div className="seat-row-label">100 ghế · 10 hàng · {room.participants.filter(p=>p.seat!==null).length} ghế đã chọn</div><div className="seats-grid">{Array.from({length:100},(_,i)=>{const p=room.participants.find(p=>p.seat===i);return <button key={i} title={p?.name||`Ghế ${i+1}`} disabled={!!p&&p.id!==you} className={(p?'occupied ':'')+(youMember?.seat===i?'mine':'')} onClick={()=>send('choose_seat',i,`Đã đổi sang ghế ${i+1}`)}><Armchair size={15}/></button>})}</div><div className="legend"><span>🟩 Bạn</span><span>⬜ Trống</span><span>🟨 Có người</span></div></>}
-    {panel==='media'&&<div className="vimo-clean-form"><p className="panel-hint">Gửi YouTube vào hàng chờ. Video được xếp theo số vote của người xem.</p><label>Liên kết YouTube</label><input autoFocus value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=..."/><label>Tiêu đề (tuỳ chọn)</label><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Tên bài hát / video"/><button className="panel-main" onClick={()=>changeMedia(true)} disabled={!url.trim()}><Plus size={18}/> Thêm vào hàng chờ</button><button className="panel-outline" onClick={()=>setPanel('queue')}>Xem hàng chờ</button><details className="vimo-details"><summary>Tải file nhạc riêng (tùy chọn)</summary><input type="file" accept=".mp3,.m4a,.wav,.ogg,.aac,.flac,audio/*" onChange={e=>setUploadFile(e.target.files?.[0]||null)}/><button disabled={!uploadFile||uploadBusy} className="panel-outline" onClick={uploadAudio}>{uploadBusy?'Đang tải lên':'Thêm file nhạc'}</button></details><small>Chỉ dùng nội dung được phép chia sẻ và nhúng.</small></div>}
+    {panel==='seats'&&<><p className="panel-hint">Chạm vào một ghế trống để chuyển chỗ ngồi.</p><div className="screen-mini">MÀN HÌNH / SÂN KHẤU</div><div className="seat-row-label">{room.maxPeople} chỗ · chọn theo sơ đồ · {room.participants.filter(p=>p.seat!==null).length} ghế đã chọn</div><div className="seats-grid">{Array.from({length:room.maxPeople},(_,i)=>{const p=room.participants.find(p=>p.seat===i);return <button key={i} title={p?.name||`Ghế ${i+1}`} disabled={!!p&&p.id!==you} className={(p?'occupied ':'')+(youMember?.seat===i?'mine':'')} onClick={()=>send('choose_seat',i,`Đã đổi sang ghế ${i+1}`)}><Armchair size={15}/></button>})}</div><div className="legend"><span>🟩 Bạn</span><span>⬜ Trống</span><span>🟨 Có người</span></div></>}
+    {panel==='media'&&<><p className="panel-hint">Thêm YouTube, link MP3/M4A, video MP4/WebM/HLS vào hàng chờ. Video YouTube hiển thị qua player chính thức.</p><label>Link YouTube / bài hát / video</label><input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://youtu.be/... hoặc .../song.mp3"/><button className="example-youtube" onClick={()=>{setUrl('https://www.youtube.com/watch?v=M7lc1UVf-VE');setTitle('YouTube IFrame API demo');}}>▶ Điền video mẫu để thử YouTube</button><label>Tên hiển thị</label><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Tên bài hát hoặc video"/><button className="panel-main" onClick={()=>changeMedia(!isHost)}>{isHost?'▶ Phát ngay':'＋ Thêm vào hàng chờ'}</button>{isHost&&<button className="panel-outline" onClick={()=>changeMedia(true)}>＋ Thêm vào hàng chờ</button>}<div className="upload-box"><strong>🎵 Gửi nhạc từ máy tính</strong><p className="panel-hint">MP3, M4A, OGG, WAV, AAC, FLAC · tối đa 20 MB · lưu tạm 24 giờ trên server demo.</p><input type="file" accept=".mp3,.m4a,.wav,.ogg,.aac,.flac,audio/*" onChange={e=>setUploadFile(e.target.files?.[0]||null)}/><button className="panel-outline" disabled={!uploadFile||uploadBusy} onClick={uploadAudio}>{uploadBusy?'Đang tải nhạc lên...':'＋ Tải file và thêm hàng chờ'}</button></div><button className="panel-outline" onClick={()=>isHost?send('media_control',{command:'load',media:{url:'demo:',title:'DISCO NIGHT • 128 BPM'}}):send('queue_add',{url:'demo:',title:'DISCO NIGHT • 128 BPM'})}>🪩 Thêm nhạc Disco demo</button><p className="panel-hint">Chỉ phát nội dung bạn có quyền sử dụng. Hỗ trợ youtube.com/watch, youtu.be, Shorts, Live. Một số video chủ sở hữu chặn nhúng nên chỉ mở được trên YouTube.</p></>}
     {panel==='queue'&&<>
-      <div className="queue-summary"><div className="overline">CÙNG CHỌN · CÙNG XEM</div><p>Thêm video YouTube hoặc bài hát vào danh sách. Bài nhiều vote sẽ phát trước. Bằng phiếu thì bài gửi sớm hơn được ưu tiên.</p></div>
-      <div className="queue-current modern-current"><div><span className="on-air-dot"/> <span className="overline">ĐANG PHÁT TRONG RẠP</span></div><strong>{screenMedia.title}</strong><small>{screenMedia.type==='youtube'?'YouTube':screenMedia.type==='audio'?'Audio':screenMedia.type==='file'?'Video':'Demo'} · {formatTime(progress)} {screenMedia.duration?' / '+formatTime(screenMedia.duration):''}</small><div className="media-button-row"><button onClick={()=>player(screenMedia.playing?'pause':'play')} disabled={!isHost}>{screenMedia.playing?<Pause size={16}/>:<Play size={16}/>} {screenMedia.playing?'Tạm dừng':'Phát'}</button><button onClick={()=>player('next')} disabled={!isHost}><SkipForward size={16}/> Chuyển bài</button><button onClick={()=>send('vote_skip',{})}><Vote size={16}/> {room.votedIds?.includes(account?.id||you)?'Rút vote':'Skip'} {room.votes}/{room.skipNeeded}</button></div>{isHost&&<label className="seek-line">Tua <input type="range" min="0" max={screenMedia.duration||3600} value={Math.max(0,Math.min(progress,screenMedia.duration||3600))} onChange={e=>send('media_control',{command:'seek',position:Number(e.target.value)})}/></label>}</div>
+      <div className="queue-summary"><div className="overline">CÙNG CHỌN · CÙNG XEM</div><p>Thêm video YouTube hoặc bài hát vào danh sách. Bình chọn để đưa bài yêu thích lên trước; chủ phòng có thể sắp xếp thủ công.</p></div>
+      <div className="queue-current modern-current"><div><span className="on-air-dot"/> <span className="overline">ĐANG PHÁT TRONG RẠP</span></div><strong>{screenMedia.title}</strong><small>{screenMedia.type==='youtube'?'YouTube':screenMedia.type==='audio'?'Audio':screenMedia.type==='file'?'Video':'Demo'} · {formatTime(progress)} {screenMedia.duration?' / '+formatTime(screenMedia.duration):''}</small><div className="media-button-row"><button onClick={()=>player(screenMedia.playing?'pause':'play')} disabled={!isHost}>{screenMedia.playing?<Pause size={16}/>:<Play size={16}/>} {screenMedia.playing?'Tạm dừng':'Phát'}</button><button onClick={()=>player('next')} disabled={!isHost}><SkipForward size={16}/> Chuyển bài</button><button onClick={()=>send('vote_skip',{})}><Vote size={16}/> {room.votedIds?.includes(you)?'Rút vote':'Skip'} {room.votes}/{room.skipNeeded}</button></div>{screenMedia.type==='youtube'&&<button className="queue-open-viewer" onClick={fullscreenVideo}><Maximize2 size={15}/> Mở trình phát YouTube lớn</button>}{isHost&&<label className="seek-line">Tua <input type="range" min="0" max={screenMedia.duration||3600} value={Math.max(0,Math.min(progress,screenMedia.duration||3600))} onChange={e=>send('media_control',{command:'seek',position:Number(e.target.value)})}/></label>}</div>
       <div className="queue-heading"><span>TIẾP THEO <b>{room.queue.length} bài</b></span><span>↑ Bình chọn để lên đầu</span></div>
       <div className="queue-items">{room.queue.length?room.queue.map((m,i)=>{
        const youtubeId=m.type==='youtube'?(m.url.match(/[?&]v=([\w-]{11})/)||[])[1]:null;
-       return <article className="queue-item-card" key={m.id}><div className="queue-rank">{String(i+1).padStart(2,'0')}</div><div className="queue-art">{youtubeId?<img src={`https://i.ytimg.com/vi/${youtubeId}/mqdefault.jpg`} loading="lazy" alt="Ảnh thu nhỏ video"/>:<Music2 size={23}/>}</div><div className="queue-details"><strong title={m.title}>{m.title}</strong><small>{m.addedBy} · {m.type==='youtube'?'YouTube':m.type==='audio'?'Audio':'Video'} {m.duration?' · '+formatTime(m.duration):''}</small></div><button className={'queue-vote '+(m.voters?.includes(account?.id||you)?'voted':'')} title="Bình chọn bài này" onClick={()=>send('queue_vote',{id:m.id})}><span>↑</span><b>{m.votes||0}</b></button><div className="queue-tools">{(isHost||m.addedById===you)&&<button title="Xóa" onClick={()=>send('queue_manage',{id:m.id,command:'remove'})}><X size={14}/></button>}</div></article>
+       return <article className="queue-item-card" key={m.id}><div className="queue-rank">{String(i+1).padStart(2,'0')}</div><div className="queue-art">{youtubeId?<img src={`https://i.ytimg.com/vi/${youtubeId}/mqdefault.jpg`} loading="lazy" alt="Ảnh thu nhỏ video"/>:<Music2 size={23}/>}</div><div className="queue-details"><strong title={m.title}>{m.title}</strong><small>{m.addedBy} · {m.type==='youtube'?'YouTube':m.type==='audio'?'Audio':'Video'} {m.duration?' · '+formatTime(m.duration):''}</small></div><button className={'queue-vote '+(m.voters?.includes(you)?'voted':'')} title="Bình chọn bài này" onClick={()=>send('queue_vote',{id:m.id})}><span>↑</span><b>{m.votes||0}</b></button><div className="queue-tools">{isHost&&<><button disabled={i===0} title="Đưa lên trên" onClick={()=>send('queue_manage',{id:m.id,command:'up'})}>↑</button><button disabled={i===room.queue.length-1} title="Đưa xuống dưới" onClick={()=>send('queue_manage',{id:m.id,command:'down'})}>↓</button></>}{(isHost||m.addedById===you)&&<button title="Xóa" onClick={()=>send('queue_manage',{id:m.id,command:'remove'})}><X size={14}/></button>}</div></article>
       }):<div className="queue-empty"><Music2 size={30}/><strong>Danh sách chờ đang trống</strong><p>Hãy thêm một bài hát hoặc video YouTube đầu tiên!</p></div>}</div>
       <button className="queue-add-main" onClick={()=>setPanel('media')}><Plus size={20}/> Thêm video YouTube / bài hát</button>
     </>}
-    {panel==='photo'&&<div className="vimo-clean-form">
-      <p className="panel-hint">Chọn ảnh, lời nhắn và thời lượng. Ảnh sẽ xuất hiện trên màn hình trong lúc âm nhạc vẫn chạy.</p>
-      <div className="wallet-balance"><small>SỐ DƯ VÍ DEMO</small><strong>{(wallet.balance||0).toLocaleString('vi-VN')} xu</strong></div>
-      {wallet.demoEnabled&&!wallet.demoCredited&&<button className="panel-outline" onClick={()=>send('wallet_demo_topup',{},'Đã nhận xu demo')}>+ 200.000 xu dùng thử</button>}
-      <label>Ảnh của bạn</label><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>setPhotoFile(e.target.files?.[0]||null)}/>
-      {photoFile&&<div className="photo-file-name">🖼 {photoFile.name}</div>}
-      <label>Lời nhắn (tối đa 160 ký tự)</label><textarea value={photoCaption} maxLength={160} onChange={e=>setPhotoCaption(e.target.value)} rows={2} placeholder="Cùng nhau tạo nên một khoảnh khắc đẹp..."/>
-      <label>Thời lượng chiếu: <b>{photoDuration} giây</b></label><input type="range" min={6} max={60} value={photoDuration} onChange={e=>setPhotoDuration(Number(e.target.value))}/>
-      <div className="photo-cost"><span>Phí chiếu ảnh</span><strong>{(photoDuration<10?10000:photoDuration*2000).toLocaleString('vi-VN')} xu</strong></div>
-      <button className="panel-main" disabled={photoBusy||!photoFile||wallet.balance<(photoDuration<10?10000:photoDuration*2000)} onClick={submitPhoto}>{photoBusy?'Đang gửi...':'Chiếu ảnh ưu tiên'}</button>
-      <small>Đây là xu demo, không phải tiền thật. Ảnh được xóa khi hết thời hạn lưu.</small>
-      <details className="vimo-details"><summary>Ảnh đang chiếu và hàng chờ ({room.photoQueue?.length||0})</summary>
-        {room.photoActive&&<div className="photo-queue-item"><img src={room.photoActive.url} alt="Ảnh đang chiếu"/>Đang chiếu · {room.photoActive.addedBy}</div>}
-        {(room.photoQueue||[]).map(p=><div className="photo-queue-item" key={p.id}><img src={p.url} alt="Ảnh chờ"/>{p.addedBy} · {p.duration}s</div>)}
-      </details>
-    </div>}
+    {panel==='photo'&&<>
+      <p className="panel-hint">Chiếu ảnh và lời nhắn lên màn hình của cả rạp. Video sẽ tạm dừng đúng vị trí, sau khi hết lượt ảnh sẽ tự phát tiếp. Mức giá đề xuất <strong>1.000đ/giây</strong>. <strong>Hiện chỉ thử bằng xu demo, chưa thu tiền thật.</strong></p>
+      <div className="wallet-balance"><small>SỐ DƯ VÍ KIỂM THỬ (KHÔNG PHẢI TIỀN THẬT)</small><strong>{(wallet.balance||0).toLocaleString('vi-VN')} xu</strong><span>Ví gắn với UUID tài khoản khi đăng nhập; chưa kết nối nạp tiền thật.</span></div>
+      {account&&<div className="panel-hint">Ví tài khoản <b>{account.username}</b> · ID {account.id.slice(0,8)}… · {wallet.accountLinked?'Đã liên kết':'Đang kết nối'}</div>}
+      {wallet.demoEnabled&&!wallet.demoCredited&&<button className="panel-outline" onClick={()=>send('wallet_demo_topup',{},'Đã nhận tín dụng demo')}>+ Nhận 200.000 xu dùng thử (một lần)</button>}
+      <h4>Kiểm thử nạp VietQR / SePay</h4>
+      <p className="panel-hint">Chỉ SANDBOX: không có mã QR chuyển khoản thật. Chỉ webhook có chữ ký hợp lệ mới được cộng vào ví UUID của tài khoản. Mỗi giao dịch được nhận một lần.</p>
+      <select value={topupAmount} onChange={e=>setTopupAmount(Number(e.target.value))}>{[10000,20000,50000,100000,200000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>)}</select>
+      <button className="panel-outline" onClick={createSandboxTopup} disabled={!account}>Tạo lệnh nạp SANDBOX (không chuyển tiền)</button>
+      {topupOrder&&<p className="panel-hint">Mã đơn: <b>{topupOrder.code}</b> · {topupOrder.amount.toLocaleString('vi-VN')}đ · Chờ webhook ký số xác nhận.</p>}
+      <label>Chọn ảnh JPG / PNG / WebP / GIF tối đa 12 MB</label>
+      <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>setPhotoFile(e.target.files?.[0]||null)}/>
+      {photoFile&&<div className="photo-file-name">📸 {photoFile.name}</div>}
+      <label>Lời nhắn hiển thị (tối đa 160 ký tự)</label>
+      <textarea value={photoCaption} maxLength={160} onChange={e=>setPhotoCaption(e.target.value)} placeholder="Chúc mọi người xem phim vui vẻ!" rows={3}/>
+      <label>Thời gian chiếu: {photoDuration} giây · {PHOTO_VND_PER_SECOND.toLocaleString('vi-VN')}đ / giây</label><input type="range" min={PHOTO_MIN_SECONDS} max={PHOTO_MAX_SECONDS} value={photoDuration} onChange={e=>setPhotoDuration(Number(e.target.value))}/>
+      <div className="photo-cost"><span>Giá quy đổi:</span><strong>{photoCost(photoDuration).toLocaleString('vi-VN')}đ</strong></div>
+      <p className="panel-hint">Thao tác thử trừ {photoCost(photoDuration).toLocaleString('vi-VN')} xu. Production cần tích hợp xác minh giao dịch và sổ cái SQL.</p>
+      <button className="panel-main" disabled={photoBusy||!photoFile||!!pendingPhoto} onClick={submitPhoto}>{photoBusy?'Đang gửi ảnh...':pendingPhoto?'⏳ Ảnh đang chờ xác minh nạp tiền':wallet.balance<photoCost(photoDuration)?'💗 Gửi ảnh và mở modal ủng hộ':'✨ Chiếu ảnh ưu tiên'}</button>
+      {pendingPhoto&&<p className="panel-hint">Ảnh đã được giữ để tự gửi lên màn hình khi webhook SANDBOX xác minh nạp đủ. Nếu bạn rời phòng/khởi động lại server, số dư vẫn còn nhưng có thể cần tải ảnh lại.</p>}
+      <button className="panel-outline" onClick={()=>setTopupOpen(true)}>💗 Mở modal ủng hộ / nạp xu sandbox</button>
+      <p className="panel-hint">Ảnh được lưu tạm và xoá định kỳ. Đăng nhập không tạo ví tiền thật; khi triển khai thanh toán cần webhook xác minh và database giao dịch.</p>
+      <h4>Hàng chiếu ảnh ({room.photoQueue?.length||0})</h4>
+      {room.photoActive?<div className="photo-queue-item"><img src={room.photoActive.url} alt="Ảnh đang chiếu"/><div><strong>Đang chiếu · {room.photoActive.addedBy}</strong><small>{room.photoActive.duration} giây</small></div></div>:<p className="panel-hint">Chưa có ảnh nào đang chiếu.</p>}
+      {(room.photoQueue||[]).map(p=><div className="photo-queue-item" key={p.id}><img src={p.url} alt="Ảnh chờ"/><div><strong>{p.addedBy}</strong><small>{p.duration} giây · Đang chờ</small></div></div>)}
+    </>}
     {panel==='support'&&<><div className="support-hero"><span>💖</span><h4>Ủng hộ rạp disco</h4><p>Gửi quà ảo để cổ vũ mọi người cùng nhảy. Đây là quà miễn phí trong bản demo, <b>không phải thanh toán tiền thật</b>.</p><div className="gift-total">{room.supportCount||0} lượt tặng quà trong phòng</div></div><div className="gift-grid">{[['heart','❤️','Thả tim'],['star','⭐','Ngôi sao'],['flower','🌹','Hoa hồng'],['confetti','🎉','Pháo giấy']].map(([gift,emoji,label])=><button key={gift} onClick={()=>send('support_gift',{gift})}><span>{emoji}</span><b>{label}</b></button>)}</div><h4>Quà vừa nhận</h4>{(room.gifts||[]).length===0?<p className="panel-hint">Chưa có ai gửi quà, hãy là người đầu tiên!</p>:[...(room.gifts||[])].reverse().map(g=><div key={g.id} className="gift-entry"><span>{({heart:'❤️',star:'⭐',flower:'🌹',confetti:'🎉'})[g.gift]}</span><strong>{g.name}</strong><small>{new Date(g.time).toLocaleTimeString('vi-VN')}</small></div>)}</>}
-    {panel==='support'&&<div className="vimo-wallet-deposit"><h4>💳 VietQR — Ủng hộ chủ rạp</h4><p className="panel-hint">QR là hướng dẫn chuyển khoản, không phải bằng chứng đã thanh toán. Ví chỉ cộng khi ngân hàng xác minh trên backend; chưa bật chuyển tiền thật.</p>{!qrConfigured?<p className="vimo-notice">Chủ rạp chưa cấu hình tài khoản VietQR.</p>:<><select value={depositAmount} onChange={e=>{setDepositAmount(Number(e.target.value));setDepositInfo(null)}}>{[10000,20000,30000,50000,100000,200000].map(n=><option value={n} key={n}>{n.toLocaleString('vi-VN')}đ</option>)}</select><button className="panel-main" disabled={depositBusy} onClick={createDeposit}>Tạo mã VietQR</button>{depositInfo&&<div className="vimo-deposit-card"><img src={depositInfo.qrUrl} alt="VietQR của chủ rạp"/><strong>{depositInfo.amount.toLocaleString('vi-VN')}đ</strong><small>{depositInfo.reference}</small><b>Đang chờ xác minh • Chưa cộng tiền</b></div>}</>}</div>}
     {panel==='chat'&&<><div className="chat-log">{messages.map(m=><div key={m.id} className={'message '+(m.system?'system':'')}>
      {m.system?<span>✦ {m.text}</span>:<><div className="msg-author">{m.name}{m.userId===you?' (Bạn)':''} <small>{new Date(m.time).toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'})}</small></div><div>{m.text}</div></>}
     </div>)}<div ref={chatEnd}/></div><div className="reaction-row">{emojiList.map(e=><button key={e} onClick={()=>send('reaction',e)}>{e}</button>)}</div></>}
     {panel==='people'&&<><div className="stat-row"><Users size={19}/><span>{room.participants.length} người đang trong phòng</span></div>{room.participants.map(p=><div className="person-row" key={p.id}><span className="person-icon" style={{background:['#9dd5be','#f6b9a6','#a7c6f2','#e5c4ee','#d9ca93','#a7e4e1'][p.color]}}>{p.name[0]?.toUpperCase()}</span><div><strong>{p.name}{p.id===you?' (Bạn)':''}</strong><small>{p.action==='dance'?'🕺 Đang nhảy':p.action==='sit'?'🪑 Đang ngồi':p.action==='wave'?'👋 Đang vẫy tay':'🙌 Đang cổ vũ'}</small></div>{p.id===room.hostId&&<Crown size={16} color="#d5e88a"/>}{isHost&&p.id!==you&&<button className="kick-btn" title="Mời người này ra khỏi phòng" onClick={()=>{if(window.confirm(`Mời ${p.name} ra khỏi phòng?`))send('kick_user',p.id)}}><X size={14}/></button>}</div>)}</>}
-    {panel==='appearance'&&<><div className="vimo-skin-market"><h4>Skin cho avatar</h4><p className="panel-hint">4 mẫu với giá 10k, 20k, 30k và 50k xu demo. Mua một lần, dùng lại miễn phí.</p><div className="vimo-skin-grid">{[['mint','Mint Pop',10000],['peach','Peach Idol',20000],['midnight','Midnight',30000],['royal','Royal Disco',50000]].map(([skin,label,price])=><button key={skin} className={'vimo-skin-card '+(youMember?.skin===skin?'on':'')} onClick={()=>send('skin_purchase',{skin},'Đã chọn '+label)}><span className={'skin-swatch skin-'+skin}>✦</span><strong>{label}</strong><small>{(wallet.ownedSkins||[]).includes(skin)?'Đã sở hữu':price.toLocaleString('vi-VN')+' xu'}</small></button>)}</div></div><p className="panel-hint">Tùy chỉnh avatar realtime. Các thành viên khác sẽ thấy trang phục bạn chọn ngay.</p><h4>Áo / màu nhân vật</h4><div className="color-picker">{['#9dd5be','#f6b9a6','#a7c6f2','#e5c4ee','#d9ca93','#a7e4e1'].map((c,i)=><button key={c} aria-label={`Áo màu ${i+1}`} style={{background:c}} onClick={()=>editOutfit('color',i)}>{youMember?.color===i?<Check color="#182321"/>:null}</button>)}</div><h4>Kiểu tóc</h4><div className="option-group">{['Tóc đen','Tóc hồng','Mũ xanh','Mũ tím'].map((n,i)=><button key={n} className={youMember?.hair===i?'on':''} onClick={()=>editOutfit('hair',i)}>{n}</button>)}</div><h4>Phụ kiện</h4><div className="option-group">{['Không','Kính râm','Tai nghe','Vương miện'].map((n,i)=><button key={n} className={youMember?.accessory===i?'on':''} onClick={()=>editOutfit('accessory',i)}>{n}</button>)}</div><h4>Quần</h4><div className="option-group">{['Đen','Tím','Xanh','Nâu','Trắng'].map((n,i)=><button key={n} className={youMember?.pants===i?'on':''} onClick={()=>editOutfit('pants',i)}>{n}</button>)}</div><h4>Điệu nhảy & vị trí</h4><div className="option-group">{[['bounce','Bounce'],['shuffle','Shuffle'],['spin','Xoay vòng']].map(([v,label])=><button className={dance===v?'on':''} key={v} onClick={()=>{setDance(v);if(youMember?.action==='dance')send('avatar_action',{action:'dance',dance:v,zone:youMember.zone});}}>🕺 {label}</button>)}</div><div className="option-group"><button onClick={()=>stageAction('floor')}>🪩 Nhảy dưới sàn</button><button onClick={()=>stageAction('stage')}>⭐ Lên sân khấu</button><button onClick={()=>send('avatar_action',{action:'sit'})}>🪑 Về ghế</button></div><p className="panel-hint">Trang phục được dựng bằng các mô hình 3D low-poly trong bản demo.</p></>}
+    {panel==='appearance'&&<><p className="panel-hint">Tùy chỉnh avatar realtime. Các thành viên khác sẽ thấy trang phục bạn chọn ngay.</p><h4>Áo / màu nhân vật</h4><div className="color-picker">{['#9dd5be','#f6b9a6','#a7c6f2','#e5c4ee','#d9ca93','#a7e4e1'].map((c,i)=><button key={c} aria-label={`Áo màu ${i+1}`} style={{background:c}} onClick={()=>editOutfit('color',i)}>{youMember?.color===i?<Check color="#182321"/>:null}</button>)}</div><h4>Kiểu tóc</h4><div className="option-group">{['Tóc đen','Tóc hồng','Mũ xanh','Mũ tím'].map((n,i)=><button key={n} className={youMember?.hair===i?'on':''} onClick={()=>editOutfit('hair',i)}>{n}</button>)}</div><h4>Phụ kiện</h4><div className="option-group">{['Không','Kính râm','Tai nghe','Vương miện'].map((n,i)=><button key={n} className={youMember?.accessory===i?'on':''} onClick={()=>editOutfit('accessory',i)}>{n}</button>)}</div><h4>Quần</h4><div className="option-group">{['Đen','Tím','Xanh','Nâu','Trắng'].map((n,i)=><button key={n} className={youMember?.pants===i?'on':''} onClick={()=>editOutfit('pants',i)}>{n}</button>)}</div><h4>Điệu nhảy & vị trí</h4><div className="option-group">{[['bounce','Bounce'],['shuffle','Shuffle'],['spin','Xoay vòng']].map(([v,label])=><button className={dance===v?'on':''} key={v} onClick={()=>{setDance(v);if(youMember?.action==='dance')send('avatar_action',{action:'dance',dance:v,zone:youMember.zone});}}>🕺 {label}</button>)}</div><div className="option-group"><button onClick={()=>stageAction('floor')}>🪩 Nhảy dưới sàn</button><button onClick={()=>stageAction('stage')}>⭐ Lên sân khấu</button><button onClick={()=>send('avatar_action',{action:'sit'})}>🪑 Về ghế</button></div><p className="panel-hint">Trang phục được dựng bằng các mô hình 3D low-poly trong bản demo.</p></>}
+    {panel==='karaoke'&&<><h4>🎤 Danh sách chờ hát</h4>{room.category!=='musicbox'?<p className="panel-hint">Tạo phòng Music Box để đăng ký lượt hát và dùng mic.</p>:<><p className="panel-hint">Chỉ người đang đến lượt mới được bật mic. Người khác vẫn nghe được. Sau khi chuyển lượt, người hát mới kết nối mic lại để nhận quyền.</p><div className="stat-row">Đang hát: <strong>{room.participants.find(p=>p.id===room.karaokeSinger)?.name||'Chưa có ai'}</strong></div>{room.karaokeQueue.map((id,i)=><div className="stat-row" key={id}>{i+1}. {room.participants.find(p=>p.id===id)?.name||'Đã rời phòng'}</div>)}<button className="panel-main" onClick={()=>send('karaoke_enqueue')}>Đăng ký hát</button><button className="panel-outline" onClick={()=>send('karaoke_leave')}>Rút khỏi lượt hát</button>{isHost&&<button className="panel-outline" onClick={()=>send('karaoke_next')}>Chuyển người hát kế tiếp</button>}</>}</>}
+    {panel==='voice'&&<><p className="panel-hint">Voice chat nhiều người sử dụng LiveKit (WebRTC). Chủ website cần cấu hình LIVEKIT_URL, API_KEY, API_SECRET trên máy chủ.</p><div className="voice-card"><div className="voice-icon">{voice?<Mic/>:<MicOff/>}</div><h4>{voice?'Mic đang bật':'Chưa kết nối mic'}</h4><p>{room.category==='musicbox'?(room.karaokeSinger===you?'Bạn đang đến lượt hát; nên dùng tai nghe để tránh vọng âm.':'Chờ đến lượt hát để được mở mic.'):(voice?'Bạn đang tham gia voice chat cùng phòng.':'Bật mic để trò chuyện cùng mọi người.')}</p><button className="panel-main" disabled={voiceLoading||(room.category==='musicbox'&&room.karaokeSinger!==you)} onClick={toggleVoice}>{voiceLoading?'Đang kết nối...':voice?'Tắt mic và rời voice':'Bật mic voice'}</button></div></>}
     {panel==='settings'&&<><div className="setting"><div><strong>Đèn disco</strong><small>Đèn laser và ánh sáng sân khấu</small></div><button disabled={!isHost} className="switch" aria-label="Bật tắt disco" aria-pressed={room.disco} onClick={()=>send('media_control',{command:'disco',enabled:!room.disco})}><span/></button></div><div className="setting"><div><strong>Phong cách sân khấu</strong><small>LED sân khấu đồng bộ mọi người</small></div><select value={room.stageTheme||'neon'} disabled={!isHost} onChange={e=>send('media_control',{command:'stage_theme',theme:e.target.value})}>{[['neon','Neon xanh'],['sunset','Hoàng hôn'],['galaxy','Ngân hà']].map(([v,n])=><option value={v} key={v}>{n}</option>)}</select></div><div className="setting"><div><strong>Nhịp Disco (BPM)</strong><small>Điều chỉnh tốc độ nhạc demo</small></div><select value={room.bpm} disabled={!isHost} onChange={e=>send('media_control',{command:'bpm',bpm:Number(e.target.value)})}>{[90,100,110,120,128,138,150,160].map(v=><option key={v} value={v}>{v}</option>)}</select></div><div className="setting"><div><strong>Trạng thái mạng</strong><small>{online?'Đã kết nối server':'Mất kết nối'}</small></div><span className="live-dot"/></div><div className="setting"><div><strong>Người quản lý</strong><small>{isHost?'Bạn là chủ phòng':'Chỉ chủ phòng điều khiển phát'}</small></div><Crown size={19}/></div><button className="panel-outline danger" onClick={leave}><DoorOpen size={16}/> Rời phòng</button></>}
-    {panel==='room'&&<><div className="room-code"><small>MÃ PHÒNG</small><strong>{room.id}</strong><p>{room.name}</p></div><button className="panel-main" onClick={invite}><Share2 size={16}/> Sao chép link mời bạn bè</button><div className="stat-row"><Users size={17}/> {room.participants.length} / {room.maxPeople} thành viên</div><div className="stat-row">{room.hasPassword?<LockKeyhole size={17}/>:<Users size={17}/>} {room.hasPassword?'Phòng có mật khẩu':'Phòng công khai'}</div><button className="panel-outline danger" onClick={leave}>Rời phòng</button></>}
-    {panel==='about'&&<p className="panel-hint">VIMO CINÉ 3D — demo công nghệ React Three Fiber + Socket.IO. Giao diện được thiết kế mới dựa trên yêu cầu của bạn. Đây không phải mã nguồn của choigivui.com.</p>}
+    {panel==='room'&&<><div className="room-code"><small>{ROOM_CATEGORIES[room.category]?.label||'Phòng'} · {room.isPrivate?'Riêng tư':'Công khai'} · MÃ PHÒNG</small><strong>{room.id}</strong><p>{room.name}</p></div><button className="panel-main" onClick={invite}><Share2 size={16}/> Sao chép link mời bạn bè</button><div className="stat-row"><Users size={17}/> {room.participants.length} / {room.maxPeople} thành viên</div><div className="stat-row">{room.hasPassword?<LockKeyhole size={17}/>:<Users size={17}/>} {room.hasPassword?'Phòng có mật khẩu':'Phòng công khai'}</div><button className="panel-outline danger" onClick={leave}>Rời phòng</button></>}
+    {panel==='about'&&<p className="panel-hint">HỘIROOM 3D — demo công nghệ React Three Fiber + Socket.IO. Giao diện được thiết kế mới dựa trên yêu cầu của bạn. Đây không phải mã nguồn của choigivui.com.</p>}
    </div>
   </div>}
-  {!joined&&panel&&<div className="generic-modal" onClick={()=>setPanel('')}><div className="simple-dialog" onClick={e=>e.stopPropagation()}><button className="dialog-close" onClick={()=>setPanel('')}><X/></button><h3>VIMO CINÉ</h3><p>Đăng nhập vào rạp để sử dụng tính năng này. Tạo phòng hoặc chọn phòng công khai!</p></div></div>}
-  {authOpen&&<div className="auth-backdrop" onClick={()=>setAuthOpen(false)}><div className="auth-dialog" role="dialog" aria-modal="true" aria-label="Tài khoản VIMO CINÉ" onClick={e=>e.stopPropagation()}>
+  {!joined&&panel&&<div className="generic-modal" onClick={()=>setPanel('')}><div className="simple-dialog" onClick={e=>e.stopPropagation()}><button className="dialog-close" onClick={()=>setPanel('')}><X/></button><h3>HỘIROOM</h3><p>Đăng nhập vào rạp để sử dụng tính năng này. Tạo phòng hoặc chọn phòng công khai!</p></div></div>}
+  {topupOpen&&<div className="auth-backdrop" onClick={()=>setTopupOpen(false)}><div className="auth-dialog topup-dialog" role="dialog" aria-modal="true" aria-label="Ủng hộ rạp qua ví sandbox" onClick={e=>e.stopPropagation()}>
+    <button className="auth-close" onClick={()=>setTopupOpen(false)}><X size={20}/></button><div className="auth-logo">♥</div>
+    <h2>Ủng hộ rạp · Nạp ví thử</h2><p>Ví hiện có <b>{(wallet.balance||0).toLocaleString('vi-VN')} xu</b>. {pendingPhoto?`Ảnh ${pendingPhoto.duration} giây cần ${pendingPhoto.cost.toLocaleString('vi-VN')} xu.`:'Bạn có thể nạp xu thử để kiểm tra webhook.'}</p>
+    <p><strong>Sandbox — KHÔNG chuyển khoản tiền thật.</strong> Tiền chỉ được cộng sau khi backend nhận webhook SePay HMAC hợp lệ. Một giao dịch chỉ ghi nhận một lần.</p>
+    {!account?<><p>Vui lòng đăng nhập tài khoản để nạp ví.</p><button className="auth-primary" onClick={()=>{setTopupOpen(false);setAuthOpen(true)}}>Đăng nhập / Đăng ký</button></>:<>
+      <label>Số tiền thử (đơn vị VND mô phỏng)</label><select value={topupAmount} onChange={e=>setTopupAmount(Number(e.target.value))}>{[10000,20000,50000,100000,200000,500000,1000000].includes(topupAmount)?[10000,20000,50000,100000,200000,500000,1000000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>):[topupAmount,10000,20000,50000,100000,200000,500000,1000000].map(a=><option key={a} value={a}>{a.toLocaleString('vi-VN')}đ</option>)}</select>
+      <button className="auth-primary" onClick={createSandboxTopup}>Tạo lệnh nạp sandbox</button>
+      {topupOrder&&<div className="topup-order"><b>Đang chờ webhook có chữ ký</b><span>Mã: {topupOrder.code}</span><span>Số tiền: {topupOrder.amount.toLocaleString('vi-VN')}đ</span><small>Trạng thái: pending. Sau khi xác minh, hệ thống tự xử lý ảnh nếu phòng và tệp còn hiệu lực.</small></div>}
+      {wallet.demoEnabled&&!wallet.demoCredited&&<button className="panel-outline" onClick={()=>send('wallet_demo_topup',{},'Đã nhận xu demo')}>Nhận 200.000 xu demo (một lần)</button>}
+    </>}
+   </div></div>}
+  {authOpen&&<div className="auth-backdrop" onClick={()=>setAuthOpen(false)}><div className="auth-dialog" role="dialog" aria-modal="true" aria-label="Tài khoản HỘIROOM" onClick={e=>e.stopPropagation()}>
     <button className="auth-close" onClick={()=>setAuthOpen(false)}><X size={20}/></button>
-    <div className="auth-logo">V</div><h2>{account?'Tài khoản của bạn':authMode==='login'?'Chào mừng trở lại':'Tạo tài khoản mới'}</h2>
+    <div className="auth-logo">W</div><h2>{account?'Tài khoản của bạn':authMode==='login'?'Chào mừng trở lại':'Tạo tài khoản mới'}</h2>
     <p>{account?'Bạn đã đăng nhập và có thể tiếp tục xem cùng bạn bè.':'Tài khoản demo được lưu ở server; mật khẩu được băm bằng scrypt.'}</p>
     {account?<><div className="account-tag"><Users size={17}/>{account.username}</div><button className="auth-primary" onClick={authLogout}>Đăng xuất</button></>:<>
     <div className="auth-tabs"><button className={authMode==='login'?'selected':''} onClick={()=>setAuthMode('login')}>Đăng nhập</button><button className={authMode==='register'?'selected':''} onClick={()=>setAuthMode('register')}>Đăng ký</button></div>
